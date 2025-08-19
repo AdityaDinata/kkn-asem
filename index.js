@@ -15,7 +15,20 @@ const __dirname = path.dirname(__filename);
 // ====== Konfigurasi API ======
 const API_URL = process.env.API_URL ?? 'http://127.0.0.1:8000/predict';
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-const client = new Client();
+const client = new Client({
+  puppeteer: {
+    headless: true,
+    executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium',
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--disable-software-rasterizer'
+    ]
+  }
+});
+
 
 // ====== Utils ======
 const tempDir = path.join(__dirname, 'temp');
