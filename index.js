@@ -1,4 +1,4 @@
-import { Client } from 'whatsapp-web.js';
+import { Client, LocalAuth } from 'whatsapp-web.js';
 import qrcode from 'qrcode-terminal';
 import axios from 'axios';
 import fs from 'fs';
@@ -13,9 +13,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // ====== Konfigurasi API ======
-const API_URL = process.env.API_URL ?? 'http://127.0.0.1:8000/predict';
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const API_URL = process.env.API_URL ?? 'https://MakanKecoa-chatbot.hf.space/predict';
+const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
+const ai = GEMINI_KEY ? new GoogleGenAI({ apiKey: GEMINI_KEY }) : null;
+
 const client = new Client({
+  authStrategy: new LocalAuth({ dataPath: path.join(__dirname, '.wwebjs_auth') }),
   puppeteer: {
     headless: true,
     executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium',
@@ -29,11 +32,11 @@ const client = new Client({
   }
 });
 
-
 // ====== Utils ======
 const tempDir = path.join(__dirname, 'temp');
 if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
 const nice = (s='') => s.replace(/_/g, ' ');
+const hasGemini = !!ai;
 
 // ====== Daftar TPS ======
 const daftarTPS = [
@@ -57,13 +60,15 @@ function hitungJarak(lat1, lon1, lat2, lon2) {
 // ====== WhatsApp Lifecycle ======
 client.on('qr', qr => qrcode.generate(qr, { small: true }));
 client.on('ready', () => console.log('✅ Bot WhatsApp siap digunakan!'));
+client.on('auth_failure', m => console.error('❌ Auth failure:', m));
+client.on('disconnected', r => console.error('⚠️ Disconnected:', r));
 client.initialize();
 
 // ====== Handler Pesan ======
 client.on('message', async (message) => {
   const text = message.body?.toLowerCase().trim();
 
-  // Jika kirim lokasi
+  // Lokasi
   if (message.type === 'location') {
     const { latitude, longitude } = message.location;
     const tpsTerdekat = daftarTPS.reduce((best, tps) => {
@@ -78,7 +83,7 @@ client.on('message', async (message) => {
     );
   }
 
-  // Jika sapaan
+  // Sapaan
   const sapaan = ['halo','hai','assalamualaikum','selamat pagi','selamat siang','selamat sore','selamat malam'];
   if (sapaan.includes(text)) {
     return message.reply(
@@ -90,13 +95,13 @@ client.on('message', async (message) => {
     );
   }
 
-  // Daftar TPS manual
+  // Daftar TPS
   if (text === '#tps') {
     const list = daftarTPS.map(tps => `📍 ${tps.nama}\n${tps.link}`).join('\n\n');
     return message.reply(`Daftar lokasi TPS:\n\n${list}`);
   }
 
-  // Jika kirim gambar
+  // Gambar
   if (message.hasMedia) {
     let media;
     try {
@@ -112,25 +117,25 @@ client.on('message', async (message) => {
     fs.writeFileSync(filePath, buffer);
 
     try {
-      // Kirim ke API HuggingFace (Flask/Gradio)
       const formData = new FormData();
       formData.append('file', fs.createReadStream(filePath));
+
+      // timeout dinaikkan 60s krn Space bisa cold-start
       const { data } = await axios.post(API_URL, formData, {
         headers: formData.getHeaders(),
-        timeout: 20000
+        timeout: 60000
       });
 
       const parent  = data?.parent?.label ?? '-';
-      const pConf   = data?.parent?.confidence ?? 0;
+      const pConf   = Number(data?.parent?.confidence ?? 0);
       const sub     = data?.sub?.label ?? '-';
-      const sConf   = data?.sub?.confidence ?? 0;
+      const sConf   = Number(data?.sub?.confidence ?? 0);
       const unsure  = !!data?.parent?.uncertain;
 
-      // Panggil Gemini untuk rekomendasi
-      const rekomendasi = await getRekomendasiGemini(nice(sub));
+      const rekomendasi = hasGemini ? await getRekomendasiGemini(nice(sub)) : 'Aktifkan GEMINI_API_KEY untuk rekomendasi.';
 
       const top3 = (data?.top3_sub ?? [])
-        .map((t, i) => `${i+1}) ${nice(t.label)} (${(t.confidence*100).toFixed(1)}%)`)
+        .map((t, i) => `${i+1}) ${nice(t.label)} (${Number(t.confidence*100).toFixed(1)}%)`)
         .join('\n');
 
       await message.reply(
@@ -141,7 +146,7 @@ client.on('message', async (message) => {
         `\n💡 Rekomendasi:\n${rekomendasi}`
       );
     } catch (e) {
-      console.error('❌ Error kirim ke API Flask:', e.message);
+      console.error('❌ Error kirim ke API HF:', e.message);
       await message.reply('⚠️ Gagal memproses gambar. Pastikan server AI aktif.');
     } finally {
       try { fs.unlinkSync(filePath); } catch {}
@@ -151,6 +156,7 @@ client.on('message', async (message) => {
 
 // ====== Gemini Helper ======
 async function getRekomendasiGemini(jenis) {
+  if (!hasGemini) return 'GEMINI_API_KEY belum di-set.';
   const prompt = `
 Jenis sampah: ${jenis}
 Berikan 3 cara pengelolaan terbaik (poin).
