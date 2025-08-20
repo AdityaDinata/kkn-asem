@@ -1,12 +1,18 @@
-import { Client, LocalAuth } from 'whatsapp-web.js';
+// index.js
+// -- Pastikan di package.json ada:  "type": "module"
+// -- ENV yang dipakai: API_URL, GEMINI_API_KEY, CHROMIUM_PATH (opsional)
+
+import wwebjs from 'whatsapp-web.js';
+const { Client, LocalAuth } = wwebjs;
+
 import qrcode from 'qrcode-terminal';
 import axios from 'axios';
-import fs from 'fs';
+import * as fs from 'fs';
 import FormData from 'form-data';
-import path from 'path';
+import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { config } from 'dotenv';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenerativeAI } from '@google/genai';
 
 config();
 const __filename = fileURLToPath(import.meta.url);
@@ -15,8 +21,9 @@ const __dirname = path.dirname(__filename);
 // ====== Konfigurasi API ======
 const API_URL = process.env.API_URL ?? 'https://MakanKecoa-chatbot.hf.space/predict';
 const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
-const ai = GEMINI_KEY ? new GoogleGenAI({ apiKey: GEMINI_KEY }) : null;
+const genAI = GEMINI_KEY ? new GoogleGenerativeAI(GEMINI_KEY) : null;
 
+// ====== WhatsApp Client ======
 const client = new Client({
   authStrategy: new LocalAuth({ dataPath: path.join(__dirname, '.wwebjs_auth') }),
   puppeteer: {
@@ -35,10 +42,10 @@ const client = new Client({
 // ====== Utils ======
 const tempDir = path.join(__dirname, 'temp');
 if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
-const nice = (s='') => s.replace(/_/g, ' ');
-const hasGemini = !!ai;
+const nice = (s = '') => s.replace(/_/g, ' ');
+const hasGemini = !!genAI;
 
-// ====== Daftar TPS ======
+// ====== Daftar TPS (contoh) ======
 const daftarTPS = [
   { nama: 'TPSU 1', lat: -1.246358, lon: 116.838075, link: 'https://maps.app.goo.gl/HzWyFLVPHThJ86Pz6' },
   { nama: 'TPSU 2', lat: -1.246242, lon: 116.836864, link: 'https://maps.app.goo.gl/xyZHbSWoERRXr713A' },
@@ -52,24 +59,30 @@ const daftarTPS = [
 ];
 
 function hitungJarak(lat1, lon1, lat2, lon2) {
-  const R = 6371, dLat = (lat2-lat1)*Math.PI/180, dLon = (lon2-lon1)*Math.PI/180;
-  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) *
+      Math.cos(lat2 * Math.PI / 180) *
+      Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
 // ====== WhatsApp Lifecycle ======
-client.on('qr', qr => qrcode.generate(qr, { small: true }));
+client.on('qr', (qr) => qrcode.generate(qr, { small: true }));
 client.on('ready', () => console.log('✅ Bot WhatsApp siap digunakan!'));
-client.on('auth_failure', m => console.error('❌ Auth failure:', m));
-client.on('disconnected', r => console.error('⚠️ Disconnected:', r));
+client.on('auth_failure', (m) => console.error('❌ Auth failure:', m));
+client.on('disconnected', (r) => console.error('⚠️ Disconnected:', r));
 client.initialize();
 
 // ====== Handler Pesan ======
 client.on('message', async (message) => {
   const text = message.body?.toLowerCase().trim();
 
-  // Lokasi
-  if (message.type === 'location') {
+  // Handler lokasi → TPS terdekat
+  if (message.type === 'location' && message.location) {
     const { latitude, longitude } = message.location;
     const tpsTerdekat = daftarTPS.reduce((best, tps) => {
       const jarak = hitungJarak(latitude, longitude, tps.lat, tps.lon);
@@ -83,11 +96,12 @@ client.on('message', async (message) => {
     );
   }
 
-  // Sapaan
-  const sapaan = ['halo','hai','assalamualaikum','selamat pagi','selamat siang','selamat sore','selamat malam'];
+  // Sapaan singkat
+  const sapaan = ['halo', 'hai', 'assalamualaikum', 'selamat pagi', 'selamat siang', 'selamat sore', 'selamat malam'];
   if (sapaan.includes(text)) {
     return message.reply(
-      `👋 Hai! Saya *SKARA* (Sampah Karang Rejo Assistant).\n\nSaya bisa:\n` +
+      `👋 Hai! Saya *SKARA* (Sampah Karang Rejo Assistant).\n\n` +
+      `Saya bisa:\n` +
       `1. 📸 Deteksi jenis sampah dari gambar\n` +
       `2. 💡 Rekomendasi pengelolaan sampah\n` +
       `3. 🗺️ Tunjukkan TPS terdekat (kirim lokasi)\n\n` +
@@ -97,11 +111,11 @@ client.on('message', async (message) => {
 
   // Daftar TPS
   if (text === '#tps') {
-    const list = daftarTPS.map(tps => `📍 ${tps.nama}\n${tps.link}`).join('\n\n');
+    const list = daftarTPS.map((tps) => `📍 ${tps.nama}\n${tps.link}`).join('\n\n');
     return message.reply(`Daftar lokasi TPS:\n\n${list}`);
   }
 
-  // Gambar
+  // Media (gambar)
   if (message.hasMedia) {
     let media;
     try {
@@ -112,6 +126,11 @@ client.on('message', async (message) => {
     }
     if (!media?.data) return message.reply('⚠️ Tidak ada gambar yang bisa diproses.');
 
+    // Optional: filter hanya gambar
+    if (media.mimetype && !media.mimetype.startsWith('image/')) {
+      return message.reply('⚠️ Kirim gambar ya, bukan file lain.');
+    }
+
     const buffer = Buffer.from(media.data, 'base64');
     const filePath = path.join(tempDir, `sampah_${Date.now()}.jpg`);
     fs.writeFileSync(filePath, buffer);
@@ -120,30 +139,32 @@ client.on('message', async (message) => {
       const formData = new FormData();
       formData.append('file', fs.createReadStream(filePath));
 
-      // timeout dinaikkan 60s krn Space bisa cold-start
+      // Timeout 60s (HF Space bisa cold start)
       const { data } = await axios.post(API_URL, formData, {
         headers: formData.getHeaders(),
         timeout: 60000
       });
 
-      const parent  = data?.parent?.label ?? '-';
-      const pConf   = Number(data?.parent?.confidence ?? 0);
-      const sub     = data?.sub?.label ?? '-';
-      const sConf   = Number(data?.sub?.confidence ?? 0);
-      const unsure  = !!data?.parent?.uncertain;
+      const parent = data?.parent?.label ?? '-';
+      const pConf = Number(data?.parent?.confidence ?? 0);
+      const sub = data?.sub?.label ?? '-';
+      const sConf = Number(data?.sub?.confidence ?? 0);
+      const unsure = !!data?.parent?.uncertain;
 
-      const rekomendasi = hasGemini ? await getRekomendasiGemini(nice(sub)) : 'Aktifkan GEMINI_API_KEY untuk rekomendasi.';
+      const rekomendasi = hasGemini
+        ? await getRekomendasiGemini(nice(sub))
+        : 'Aktifkan GEMINI_API_KEY untuk rekomendasi.';
 
       const top3 = (data?.top3_sub ?? [])
-        .map((t, i) => `${i+1}) ${nice(t.label)} (${Number(t.confidence*100).toFixed(1)}%)`)
+        .map((t, i) => `${i + 1}) ${nice(t.label)} (${Number(t.confidence * 100).toFixed(1)}%)`)
         .join('\n');
 
       await message.reply(
         `♻️ Klasifikasi: *${parent} → ${nice(sub)}*\n` +
-        `• Parent: ${(pConf*100).toFixed(1)}%${unsure ? ' (ragu)' : ''}\n` +
-        `• Sub   : ${(sConf*100).toFixed(1)}%\n` +
-        (top3 ? `\nTop-3 sub:\n${top3}\n` : '') +
-        `\n💡 Rekomendasi:\n${rekomendasi}`
+          `• Parent: ${(pConf * 100).toFixed(1)}%${unsure ? ' (ragu)' : ''}\n` +
+          `• Sub   : ${(sConf * 100).toFixed(1)}%\n` +
+          (top3 ? `\nTop-3 sub:\n${top3}\n` : '') +
+          `\n💡 Rekomendasi:\n${rekomendasi}`
       );
     } catch (e) {
       console.error('❌ Error kirim ke API HF:', e.message);
@@ -157,23 +178,22 @@ client.on('message', async (message) => {
 // ====== Gemini Helper ======
 async function getRekomendasiGemini(jenis) {
   if (!hasGemini) return 'GEMINI_API_KEY belum di-set.';
-  const prompt = `
-Jenis sampah: ${jenis}
+  const prompt =
+`Jenis sampah: ${jenis}
 Berikan 3 cara pengelolaan terbaik (poin).
 Format:
 • ...
 • ...
 • ...
 Bahasa santai dan mudah dipahami masyarakat.`;
+
   try {
-    const result = await ai.models.generateContent({
-      model: 'gemini-1.5-flash',
-      contents: [{ parts: [{ text: prompt }] }]
-    });
-    return result?.candidates?.[0]?.content?.parts?.[0]?.text
-           ?? '⚠️ Tidak ada rekomendasi dari AI.';
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const result = await model.generateContent(prompt);
+    const teks = result?.response?.text();
+    return teks || '⚠️ Tidak ada rekomendasi dari AI.';
   } catch (err) {
-    console.error('❌ Gemini error:', err.message);
+    console.error('❌ Gemini error:', err?.message || err);
     return '⚠️ AI sedang sibuk, coba lagi nanti.';
   }
 }
