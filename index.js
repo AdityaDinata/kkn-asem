@@ -12,7 +12,8 @@ import FormData from 'form-data';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { config } from 'dotenv';
-import { GoogleGenerativeAI } from '@google/genai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
+
 
 config();
 const __filename = fileURLToPath(import.meta.url);
