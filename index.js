@@ -107,7 +107,7 @@ client.on('message', async (message) => {
   if (sapaan.includes(text)) {
     if (hasGemini) {
       try {
-        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
         const res = await model.generateContent(
           `Kamu adalah SKARA, asisten pengelolaan sampah untuk warga.
 Balas sapaan singkat ramah. Di akhir, tampilkan menu berikut persis:
@@ -213,7 +213,7 @@ Format:
 Bahasa santai dan mudah dipahami masyarakat.`;
 
   try {
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
     const result = await model.generateContent(prompt);
     const teks = result?.response?.text?.();
     return teks || '⚠️ Tidak ada rekomendasi dari AI.';
