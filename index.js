@@ -1,6 +1,6 @@
 // index.js
-// -- Pastikan di package.json ada:  "type": "module"
-// -- ENV yang dipakai: API_URL, GEMINI_API_KEY, CHROMIUM_PATH (opsional)
+// Pastikan di package.json ada:  "type": "module"
+// ENV yang dipakai: API_URL, GEMINI_API_KEY, CHROMIUM_PATH (opsional)
 
 import wwebjs from 'whatsapp-web.js';
 const { Client, LocalAuth } = wwebjs;
@@ -14,8 +14,8 @@ import { fileURLToPath } from 'url';
 import { config } from 'dotenv';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-
 config();
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -43,8 +43,13 @@ const client = new Client({
 // ====== Utils ======
 const tempDir = path.join(__dirname, 'temp');
 if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
+
 const nice = (s = '') => s.replace(/_/g, ' ');
 const hasGemini = !!genAI;
+
+function cleanupFile(p) {
+  try { fs.unlinkSync(p); } catch {}
+}
 
 // ====== Daftar TPS (contoh) ======
 const daftarTPS = [
@@ -97,16 +102,37 @@ client.on('message', async (message) => {
     );
   }
 
-  // Sapaan singkat
+  // Sapaan → dijawab oleh Gemini (fallback ke teks statis)
   const sapaan = ['halo', 'hai', 'assalamualaikum', 'selamat pagi', 'selamat siang', 'selamat sore', 'selamat malam'];
   if (sapaan.includes(text)) {
+    if (hasGemini) {
+      try {
+        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+        const res = await model.generateContent(
+          `Kamu adalah SKARA, asisten pengelolaan sampah untuk warga.
+Balas sapaan singkat ramah. Di akhir, tampilkan menu berikut persis:
+
+Saya bisa:
+1. 📸 Deteksi jenis sampah dari gambar
+2. 💡 Rekomendasi pengelolaan sampah
+3. 🗺️ Tunjukkan TPS terdekat (kirim lokasi)`
+        );
+        const ai = res?.response?.text?.();
+        if (ai) return message.reply(ai);
+      } catch (e) {
+        console.error('❌ Gemini greet error:', e?.message || e);
+      }
+    }
+    // fallback statis
     return message.reply(
-      `👋 Hai! Saya *SKARA* (Sampah Karang Rejo Assistant).\n\n` +
-      `Saya bisa:\n` +
-      `1. 📸 Deteksi jenis sampah dari gambar\n` +
-      `2. 💡 Rekomendasi pengelolaan sampah\n` +
-      `3. 🗺️ Tunjukkan TPS terdekat (kirim lokasi)\n\n` +
-      `Kirim gambar sampah 📷 atau share lokasi 📍 ya!`
+      `👋 Hai! Saya *SKARA* (Sampah Karang Rejo Assistant).
+
+Saya bisa:
+1. 📸 Deteksi jenis sampah dari gambar
+2. 💡 Rekomendasi pengelolaan sampah
+3. 🗺️ Tunjukkan TPS terdekat (kirim lokasi)
+
+Kirim gambar sampah 📷 atau share lokasi 📍 ya!`
     );
   }
 
@@ -126,17 +152,14 @@ client.on('message', async (message) => {
       return message.reply('❌ Gagal mengunduh gambar. Coba lagi ya.');
     }
     if (!media?.data) return message.reply('⚠️ Tidak ada gambar yang bisa diproses.');
-
-    // Optional: filter hanya gambar
     if (media.mimetype && !media.mimetype.startsWith('image/')) {
       return message.reply('⚠️ Kirim gambar ya, bukan file lain.');
     }
 
-    const buffer = Buffer.from(media.data, 'base64');
     const filePath = path.join(tempDir, `sampah_${Date.now()}.jpg`);
-    fs.writeFileSync(filePath, buffer);
-
     try {
+      fs.writeFileSync(filePath, Buffer.from(media.data, 'base64'));
+
       const formData = new FormData();
       formData.append('file', fs.createReadStream(filePath));
 
@@ -152,6 +175,7 @@ client.on('message', async (message) => {
       const sConf = Number(data?.sub?.confidence ?? 0);
       const unsure = !!data?.parent?.uncertain;
 
+      // rekomendasi via Gemini
       const rekomendasi = hasGemini
         ? await getRekomendasiGemini(nice(sub))
         : 'Aktifkan GEMINI_API_KEY untuk rekomendasi.';
@@ -162,16 +186,16 @@ client.on('message', async (message) => {
 
       await message.reply(
         `♻️ Klasifikasi: *${parent} → ${nice(sub)}*\n` +
-          `• Parent: ${(pConf * 100).toFixed(1)}%${unsure ? ' (ragu)' : ''}\n` +
-          `• Sub   : ${(sConf * 100).toFixed(1)}%\n` +
-          (top3 ? `\nTop-3 sub:\n${top3}\n` : '') +
-          `\n💡 Rekomendasi:\n${rekomendasi}`
+        `• Parent: ${(pConf * 100).toFixed(1)}%${unsure ? ' (ragu)' : ''}\n` +
+        `• Sub   : ${(sConf * 100).toFixed(1)}%\n` +
+        (top3 ? `\nTop-3 sub:\n${top3}\n` : '') +
+        `\n💡 Rekomendasi:\n${rekomendasi}`
       );
     } catch (e) {
       console.error('❌ Error kirim ke API HF:', e.message);
       await message.reply('⚠️ Gagal memproses gambar. Pastikan server AI aktif.');
     } finally {
-      try { fs.unlinkSync(filePath); } catch {}
+      cleanupFile(filePath);
     }
   }
 });
@@ -191,10 +215,22 @@ Bahasa santai dan mudah dipahami masyarakat.`;
   try {
     const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
     const result = await model.generateContent(prompt);
-    const teks = result?.response?.text();
+    const teks = result?.response?.text?.();
     return teks || '⚠️ Tidak ada rekomendasi dari AI.';
   } catch (err) {
     console.error('❌ Gemini error:', err?.message || err);
     return '⚠️ AI sedang sibuk, coba lagi nanti.';
   }
 }
+
+// ====== Graceful shutdown untuk PM2/Nodemon ======
+process.on('SIGINT', async () => {
+  console.log('🔻 SIGINT diterima. Menutup client...');
+  try { await client.destroy(); } catch {}
+  process.exit(0);
+});
+process.on('SIGTERM', async () => {
+  console.log('🔻 SIGTERM diterima. Menutup client...');
+  try { await client.destroy(); } catch {}
+  process.exit(0);
+});

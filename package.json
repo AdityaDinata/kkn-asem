@@ -1,13 +1,17 @@
 {
-  "name": "wa-bot",
+  "name": "skara-bot",
   "version": "1.0.0",
   "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
   "dependencies": {
-    "@google/genai": "^1.8.0",
-    "axios": "^1.6.0",
-    "dotenv": "^17.0.1",
+    "@google/generative-ai": "^0.23.0",
+    "axios": "^1.7.7",
+    "dotenv": "^16.4.5",
     "form-data": "^4.0.0",
     "qrcode-terminal": "^0.12.0",
-    "whatsapp-web.js": "^1.31.0"
+    "whatsapp-web.js": "^1.26.0"
   }
 }
