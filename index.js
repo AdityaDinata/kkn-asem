@@ -1,8 +1,6 @@
 // index.js
-// Pastikan di package.json ada:  "type": "module"
-// ENV yang dipakai: API_URL, GEMINI_API_KEY, GEMINI_MODEL (opsional), CHROMIUM_PATH (opsional)
-//
-// Dep: npm i whatsapp-web.js qrcode-terminal axios form-data dotenv @google/genai
+// Pastikan di package.json ada: "type": "module"
+// ENV: API_URL, GEMINI_API_KEY, GEMINI_MODEL (opsional), CHROMIUM_PATH (opsional)
 
 import wwebjs from 'whatsapp-web.js';
 const { Client, LocalAuth } = wwebjs;
@@ -14,20 +12,19 @@ import FormData from 'form-data';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { config } from 'dotenv';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ====== Konfigurasi ENV ======
+// ====== ENV & init ======
 const API_URL = (process.env.API_URL || 'https://MakanKecoa-chatbot.hf.space/predict').trim();
 const GEMINI_KEY = (process.env.GEMINI_API_KEY || '').trim();
-const GEMINI_MODEL = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim(); // default coba 2.5
+const GEMINI_MODEL = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim();
 
-// Inisialisasi SDK baru @google/genai
-const genAI = GEMINI_KEY ? new GoogleGenAI({ apiKey: GEMINI_KEY }) : null;
+const genAI = GEMINI_KEY ? new GoogleGenerativeAI(GEMINI_KEY) : null;
 const hasGemini = !!genAI;
 
 // ====== WhatsApp Client ======
@@ -80,54 +77,40 @@ function hitungJarak(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// ====== Helpers Gemini (@google/genai) ======
+// ====== Gemini helpers (SDK lama) ======
 function isKeyInvalidError(err) {
   const m = (err?.message || '').toLowerCase();
   return m.includes('api key not valid') || m.includes('api_key_invalid');
 }
+const withTimeout = (p, ms = 15000) =>
+  Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`Gemini timeout ${ms}ms`)), ms))]);
 
-// Normalisasi output SDK @google/genai
-function extractGenAIText(res) {
-  return (
-    res?.text ??
-    res?.output_text ??
-    (Array.isArray(res?.candidates)
-      ? res.candidates.flatMap(c => c?.content?.parts?.map(p => p?.text || '') || []).join('')
-      : '')
-  )?.trim();
+async function askGemini25Strict(prompt) {
+  if (!genAI) throw new Error('Gemini not initialized');
+  console.log('[Gemini] CALL (strict) model =', GEMINI_MODEL);
+  const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
+  const res = await withTimeout(model.generateContent(prompt), 15000);
+  const txt = res?.response?.text?.() || '';
+  return txt.trim();
 }
 
-// Paksa 2.5 (untuk debug; tanpa fallback)
-async function askGemini25Strict(promptText) {
+async function askGeminiPrefer25(prompt) {
   if (!genAI) throw new Error('Gemini not initialized');
-  const modelName = GEMINI_MODEL || 'gemini-2.5-flash';
-  console.log('[Gemini] CALL (strict) model =', modelName);
-  const res = await genAI.models.generateContent({ model: modelName, contents: promptText });
-  const out = extractGenAIText(res);
-  return out || '';
-}
-
-// Prefer 2.5 (fallback ke 1.5 jika perlu)
-async function askGeminiPrefer25(promptText) {
-  if (!genAI) throw new Error('Gemini not initialized');
-
-  const withTimeout = (p, ms = 15000) =>
-    Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`Gemini timeout ${ms}ms`)), ms))]);
-
   const prefer = GEMINI_MODEL || 'gemini-2.5-flash';
   try {
     console.log('[Gemini] TRY', prefer);
-    const res = await withTimeout(genAI.models.generateContent({ model: prefer, contents: promptText }));
-    const out = extractGenAIText(res);
-    if (out) return out;
-    throw new Error('Empty response on prefer model');
+    const model = genAI.getGenerativeModel({ model: prefer });
+    const res = await withTimeout(model.generateContent(prompt), 15000);
+    const out = res?.response?.text?.() || '';
+    if (out.trim()) return out.trim();
+    throw new Error('Empty response');
   } catch (e) {
     if (isKeyInvalidError(e)) throw e;
     const fb = 'gemini-1.5-flash';
-    console.warn('⚠️ Prefer model failed:', prefer, '-', e?.message || e);
-    console.log('➡️ Fallback to', fb);
-    const res2 = await withTimeout(genAI.models.generateContent({ model: fb, contents: promptText }));
-    return extractGenAIText(res2) || '';
+    console.warn('⚠️ Prefer failed:', prefer, '-', e?.message || e, '➡️ Fallback:', fb);
+    const model2 = genAI.getGenerativeModel({ model: fb });
+    const res2 = await withTimeout(model2.generateContent(prompt), 15000);
+    return (res2?.response?.text?.() || '').trim();
   }
 }
 
@@ -151,13 +134,13 @@ Bahasa santai dan mudah dipahami masyarakat.`;
   }
 }
 
-// ====== WhatsApp Lifecycle ======
+// ====== Lifecycle ======
 client.on('qr', (qr) => qrcode.generate(qr, { small: true }));
 client.on('ready', () => {
   console.log('[BOOT]', __filename);
   console.log('✅ Bot WhatsApp siap digunakan!');
-  console.log('[BOOT] SDK = @google/genai, MODEL =', GEMINI_MODEL);
-  console.log('[BOOT] GEMINI KEY =', GEMINI_KEY ? `****${GEMINI_KEY.slice(-4)}` : 'EMPTY');
+  console.log('[BOOT] SDK = @google/generative-ai, MODEL =', GEMINI_MODEL);
+  console.log('[BOOT] GEMINI KEY tail =', GEMINI_KEY ? GEMINI_KEY.slice(-4) : 'EMPTY');
   console.log('[BOOT] API_URL =', API_URL);
 });
 client.on('auth_failure', (m) => console.error('❌ Auth failure:', m));
@@ -170,7 +153,7 @@ client.on('message', async (message) => {
   const text = textRaw.toLowerCase().trim();
   console.log('[MSG]', { type: message.type, from: message.from, body: textRaw.slice(0, 120) });
 
-  // ---- Perintah uji/debug ----
+  // Debug cmds
   if (text === '#ping') return safeReply(message, 'pong');
 
   if (text === '#test25') {
@@ -179,8 +162,8 @@ client.on('message', async (message) => {
       const out = await askGeminiPrefer25('Balas persis: 25 OK');
       return safeReply(message, out || 'no text');
     } catch (e) {
-      console.error('❌ Test25 error:', e?.message || e);
-      return safeReply(message, isKeyInvalidError(e) ? 'API key invalid. Cek .env.' : 'Gemini error. Cek logs.');
+      console.error('❌ Test25:', e?.message || e);
+      return safeReply(message, isKeyInvalidError(e) ? 'API key invalid. Cek .env' : `Gemini error: ${e?.message || e}`);
     }
   }
 
@@ -190,15 +173,14 @@ client.on('message', async (message) => {
       const out = await askGemini25Strict('Balas persis: FORCE 25 OK');
       return safeReply(message, out || 'no text');
     } catch (e) {
-      console.error('❌ force25 error:', e?.message || e);
-      return safeReply(
-        message,
-        isKeyInvalidError(e) ? 'API key invalid / 2.5 ditolak oleh project key.' : `Error 2.5: ${e?.message || e}`
-      );
+      console.error('❌ force25:', e?.message || e);
+      return safeReply(message, isKeyInvalidError(e)
+        ? 'API key invalid / 2.5 ditolak oleh project key.'
+        : `Error 2.5: ${e?.message || e}`);
     }
   }
 
-  // ---- Lokasi → TPS terdekat ----
+  // Lokasi → TPS terdekat
   if (message.type === 'location' && message.location) {
     const { latitude, longitude } = message.location;
     const tpsTerdekat = daftarTPS.reduce((best, tps) => {
@@ -214,7 +196,7 @@ client.on('message', async (message) => {
     );
   }
 
-  // ---- Sapaan → Gemini (fallback statis) ----
+  // Sapaan → Gemini (fallback statis)
   const sapaan = ['halo', 'hai', 'assalamualaikum', 'selamat pagi', 'selamat siang', 'selamat sore', 'selamat malam'];
   if (sapaan.includes(text)) {
     if (hasGemini) {
@@ -246,13 +228,13 @@ Kirim gambar sampah 📷 atau share lokasi 📍 ya!`
     );
   }
 
-  // ---- Daftar TPS ----
+  // Daftar TPS
   if (text === '#tps') {
     const list = daftarTPS.map((tps) => `📍 ${tps.nama}\n${tps.link}`).join('\n\n');
     return safeReply(message, `Daftar lokasi TPS:\n\n${list}`);
   }
 
-  // ---- Media (gambar) → klasifikasi + rekomendasi ----
+  // Media (gambar) → klasifikasi + rekomendasi
   if (message.hasMedia) {
     let media;
     try {
@@ -308,7 +290,7 @@ Kirim gambar sampah 📷 atau share lokasi 📍 ya!`
     }
   }
 
-  // ---- Teks generik → SELALU lewat Gemini (biar Gemini filter topik) ----
+  // Teks generik → selalu lewat Gemini (biar Gemini yang filter topik)
   if (hasGemini && text) {
     try {
       const ai = await askGeminiPrefer25(
@@ -331,7 +313,6 @@ Balas dalam 1–5 baris.`
     }
   }
 
-  // ---- Fallback terakhir ----
   return safeReply(message, '👋 Hai! Tanyakan hal seputar *sampah* ya. Contoh: "kardus termasuk apa?", "plastik organik atau anorganik?"');
 });
 
