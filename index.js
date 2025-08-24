@@ -22,9 +22,6 @@ const __dirname = path.dirname(__filename);
 // ====== Konfigurasi API ======
 const API_URL = process.env.API_URL ?? 'https://MakanKecoa-chatbot.hf.space/predict';
 const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
-// Catatan: karena blok rekomendasi sudah jalan di setup kamu,
-// biarkan konstruktor seperti ini (string). Jika perlu, alternatifnya:
-// const genAI = GEMINI_KEY ? new GoogleGenerativeAI({ apiKey: GEMINI_KEY }) : null;
 const genAI = GEMINI_KEY ? new GoogleGenerativeAI(GEMINI_KEY) : null;
 const hasGemini = !!genAI;
 
@@ -54,10 +51,40 @@ const nice = (s = '') => s.replace(/_/g, ' ');
 function sanitizeWA(s = '') {
   return s.replace(/([_*~`>])/g, '\\$1');
 }
+
 async function safeReply(message, text) {
   return message.reply(sanitizeWA(text ?? ''));
 }
-function cleanupFile(p) { try { fs.unlinkSync(p); } catch {} }
+
+function cleanupFile(p) {
+  try { fs.unlinkSync(p); } catch {}
+}
+
+// ====== Deteksi topik "sampah" sederhana (heuristik lokal) ======
+const KATA_KUNCI_SAMPAH = [
+  'sampah', 'organik', 'anorganik', 'residu', 'b3', 'limbah',
+  'kompos', 'komposting', 'takakura', 'magot', 'magot', 'bsf',
+  'daur ulang', 'recycle', 'reduce', 'reuse', 'bank sampah',
+  'tps', 'tpa', 'pemilahan', 'plastik', 'kertas', 'kardus',
+  'kaca', 'logam', 'minyak jelantah', 'popok', 'elektronik',
+  'ewaste', 'komunal', 'pengelolaan sampah', 'pengangkutan sampah',
+  'sedekah sampah', 'briket', 'pupuk', 'insinerator'
+];
+
+function isWasteRelated(text = '') {
+  const t = text.toLowerCase();
+  // minimal 1 kata kunci atau frasa umum pertanyaan klasifikasi
+  if (KATA_KUNCI_SAMPAH.some(k => t.includes(k))) return true;
+  // pola tanya umum yang sering dipakai pengguna bot ini
+  const pola = [
+    /termasuk apa\?$/, // "kardus termasuk apa?"
+    /apakah .*organik\?$/, // "apakah plastik organik?"
+    /cara (buang|olah|kelola)/, // "cara olah popok?"
+    /(jenis|kategori) sampah/,
+    /klasifik(as|asi)/,
+  ];
+  return pola.some(rx => rx.test(t));
+}
 
 // ====== Daftar TPS (contoh) ======
 const daftarTPS = [
@@ -86,11 +113,7 @@ function hitungJarak(lat1, lon1, lat2, lon2) {
 
 // ====== WhatsApp Lifecycle ======
 client.on('qr', (qr) => qrcode.generate(qr, { small: true }));
-client.on('ready', () => {
-  console.log('✅ Bot WhatsApp siap digunakan!');
-  console.log('GEMINI KEY loaded:', GEMINI_KEY ? `****${GEMINI_KEY.slice(-4)}` : 'EMPTY');
-  console.log('Has Gemini:', !!genAI);
-});
+client.on('ready', () => console.log('✅ Bot WhatsApp siap digunakan!'));
 client.on('auth_failure', (m) => console.error('❌ Auth failure:', m));
 client.on('disconnected', (r) => console.error('⚠️ Disconnected:', r));
 client.initialize();
@@ -99,19 +122,6 @@ client.initialize();
 client.on('message', async (message) => {
   const textRaw = message.body ?? '';
   const text = textRaw.toLowerCase().trim();
-
-  // Quick test command
-  if (text === '#testgemini') {
-    if (!hasGemini) return safeReply(message, 'GEMINI_API_KEY belum terpasang.');
-    try {
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-      const res = await model.generateContent('Balas persis: "Gemini OK"');
-      return safeReply(message, res?.response?.text?.() || 'No text()');
-    } catch (e) {
-      console.error('❌ Test Gemini error:', e?.response?.data || e);
-      return safeReply(message, 'Gemini error. Cek logs.');
-    }
-  }
 
   // Handler lokasi → TPS terdekat
   if (message.type === 'location' && message.location) {
@@ -147,9 +157,10 @@ Saya bisa:
         const ai = res?.response?.text?.();
         if (ai) return safeReply(message, ai);
       } catch (e) {
-        console.error('❌ Gemini greet error:', e?.response?.data || e);
+        console.error('❌ Gemini greet error:', e?.message || e);
       }
     }
+    // fallback statis
     return safeReply(
       message,
       `👋 Hai! Saya SKARA (Sampah Karang Rejo Assistant).
@@ -169,7 +180,7 @@ Kirim gambar sampah 📷 atau share lokasi 📍 ya!`
     return safeReply(message, `Daftar lokasi TPS:\n\n${list}`);
   }
 
-  // Media (gambar) → kirim ke model klasifikasi + rekomendasi Gemini
+  // Media (gambar)
   if (message.hasMedia) {
     let media;
     try {
@@ -190,6 +201,7 @@ Kirim gambar sampah 📷 atau share lokasi 📍 ya!`
       const formData = new FormData();
       formData.append('file', fs.createReadStream(filePath));
 
+      // Timeout 60s (HF Space bisa cold start)
       const { data } = await axios.post(API_URL, formData, {
         headers: formData.getHeaders(),
         timeout: 60000
@@ -201,6 +213,7 @@ Kirim gambar sampah 📷 atau share lokasi 📍 ya!`
       const sConf = Number(data?.sub?.confidence ?? 0);
       const unsure = !!data?.parent?.uncertain;
 
+      // rekomendasi via Gemini
       const rekomendasi = hasGemini
         ? await getRekomendasiGemini(nice(sub))
         : 'Aktifkan GEMINI_API_KEY untuk rekomendasi.';
@@ -226,32 +239,45 @@ Kirim gambar sampah 📷 atau share lokasi 📍 ya!`
     }
   }
 
-  // ====== Handler teks generik → SELALU lewat Gemini, biar Gemini yang filter topik ======
+  // ====== Handler teks generik → selalu lewat Gemini dengan guardrail topik ======
   if (hasGemini && text) {
+    // Jika di luar topik, arahkan tegas namun sopan
+    if (!isWasteRelated(text)) {
+      return safeReply(
+        message,
+        '🙏 Maaf, saya hanya membantu topik pengelolaan sampah (klasifikasi, cara olah, kompos, TPS, dll). ' +
+        'Coba ajukan pertanyaan yang terkait sampah ya.'
+      );
+    }
+    // Di dalam topik → jawab ringkas & tepat sasaran
     try {
       const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
       const prompt =
-`Anda adalah SKARA, asisten WhatsApp untuk pengelolaan sampah.
-Aturan:
-- Jawab HANYA jika pertanyaannya terkait sampah (jenis/kategori, organik–anorganik–residu–B3, kompos/daur ulang, TPS).
-- Jika di luar topik, balas kalimat penolakan singkat: "Maaf, saya hanya bantu topik sampah."
-- Jawab ringkas, jelas, aplikatif untuk warga.
-- Jika klasifikasi seperti "apakah plastik organik" / "kardus termasuk apa", jawab kategori + 1–3 tips singkat.
+`Anda adalah SKARA, asisten WhatsApp untuk *pengelolaan sampah*.
+Peraturan ketat:
+- HANYA jawab jika pertanyaan terkait sampah (jenis/kategori, organik-anorganik-residu-B3, cara olah/kompos/daur ulang, TPS).
+- Jika pertanyaan di luar itu, jawab: "Maaf, saya hanya bantu topik sampah."
+- Jawaban harus ringkas, jelas, dan aplikatif untuk warga.
+- Jika klasifikasi jenis ("apakah plastik organik?" "kardus termasuk apa?"), jawab langsung dengan kategori + 1-3 tips singkat pengelolaan.
+- Gunakan bahasa Indonesia santai.
 
 Pertanyaan pengguna:
 "${textRaw}"
 
-Balas dalam 1–5 baris.`;
+Jawablah SINGKAT dalam 1–5 baris maksimal.`;
       const res = await model.generateContent(prompt);
       const ai = res?.response?.text?.();
-      return safeReply(message, ai?.trim() || '⚠️ Maaf, belum bisa menjawab. Coba tanya ulang seputar sampah ya.');
+      if (ai && ai.trim()) {
+        return safeReply(message, ai.trim());
+      }
+      return safeReply(message, '⚠️ Maaf, belum bisa menjawab. Coba tanyakan ulang seputar sampah ya.');
     } catch (e) {
-      console.error('❌ Gemini QA error:', e?.response?.data || e);
-      return safeReply(message, '⚠️ AI error. Coba lagi sebentar ya.');
+      console.error('❌ Gemini QA error:', e?.message || e);
+      return safeReply(message, '⚠️ AI sedang sibuk. Coba lagi sebentar ya.');
     }
   }
 
-  // Fallback terakhir
+  // Jika sampai sini dan tidak ada apa pun yang cocok
   return safeReply(message, '👋 Hai! Tanyakan hal seputar *sampah* ya. Contoh: "kardus termasuk apa?", "plastik organik atau anorganik?"');
 });
 
@@ -266,13 +292,14 @@ Format:
 • ...
 • ...
 Bahasa santai dan mudah dipahami masyarakat.`;
+
   try {
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
     const result = await model.generateContent(prompt);
     const teks = result?.response?.text?.();
     return teks || '⚠️ Tidak ada rekomendasi dari AI.';
   } catch (err) {
-    console.error('❌ Gemini error:', err?.response?.data || err);
+    console.error('❌ Gemini error:', err?.message || err);
     return '⚠️ AI sedang sibuk, coba lagi nanti.';
   }
 }
