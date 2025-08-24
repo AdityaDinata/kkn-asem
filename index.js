@@ -63,35 +63,35 @@ function hitungJarak(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// ====== Filter anti-Markdown WhatsApp ======
-function sanitizeForWhatsApp(input) {
-  if (!input) return '';
+// // ====== Filter anti-Markdown WhatsApp ======
+// function sanitizeForWhatsApp(input) {
+//   if (!input) return '';
 
-  let s = String(input);
+//   let s = String(input);
 
-  // 1) Ubah bullet di awal baris: "* " / "- " → "• "
-  s = s.replace(/^[\t >-]*\* +/gm, '• ');
-  s = s.replace(/^[\t >-]*- +/gm,  '• ');
+//   // 1) Ubah bullet di awal baris: "* " / "- " → "• "
+//   s = s.replace(/^[\t >-]*\* +/gm, '• ');
+//   s = s.replace(/^[\t >-]*- +/gm,  '• ');
 
-  // 2) Hilangkan heading markdown (#, ##, ...)
-  s = s.replace(/^#{1,6}\s*/gm, '');
+//   // 2) Hilangkan heading markdown (#, ##, ...)
+//   s = s.replace(/^#{1,6}\s*/gm, '');
 
-  // 3) Hilangkan bold/italic/strike/inline-code
-  s = s.replace(/\*\*(.*?)\*\*/gs, '$1');  // **bold**
-  s = s.replace(/__(.*?)__/gs, '$1');      // __bold__
-  s = s.replace(/_(.*?)_/gs, '$1');        // _italic_
-  s = s.replace(/\*(.*?)\*/gs, '$1');      // *italic*
-  s = s.replace(/~(.*?)~/gs, '$1');        // ~strike~
-  s = s.replace(/`{1,3}([\s\S]*?)`{1,3}/g, '$1'); // `code` atau ```code```
+//   // 3) Hilangkan bold/italic/strike/inline-code
+//   s = s.replace(/\*\*(.*?)\*\*/gs, '$1');  // **bold**
+//   s = s.replace(/__(.*?)__/gs, '$1');      // __bold__
+//   s = s.replace(/_(.*?)_/gs, '$1');        // _italic_
+//   s = s.replace(/\*(.*?)\*/gs, '$1');      // *italic*
+//   s = s.replace(/~(.*?)~/gs, '$1');        // ~strike~
+//   s = s.replace(/`{1,3}([\s\S]*?)`{1,3}/g, '$1'); // `code` atau ```code```
 
-  // 4) Sisa asterisk diganti simbol aman (full-width asterisk/•)
-  s = s.replace(/\*/g, '•');
+//   // 4) Sisa asterisk diganti simbol aman (full-width asterisk/•)
+//   s = s.replace(/\*/g, '•');
 
-  // 5) Rapikan spasi kosong berlebih di baris
-  s = s.replace(/[ \t]+$/gm, '');
+//   // 5) Rapikan spasi kosong berlebih di baris
+//   s = s.replace(/[ \t]+$/gm, '');
 
-  return s;
-}
+//   return s;
+// }
 
 // ====== Daftar TPS (contoh) ======
 const daftarTPS = [
