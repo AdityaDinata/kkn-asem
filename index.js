@@ -43,24 +43,27 @@ const client = new Client({
 const tempDir = path.join(__dirname, 'temp');
 if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
 
-const nice = (s = '') => s.replace(/_/g, ' ');
+const nice = (s = '') => s.replace(/_/g, ' ').trim();
 const hasGemini = !!genAI;
 
 // Escape karakter yang bikin formatting WA berantakan pada output AI
-const sanitize = (s = '') => s.replace(/([*_`~>])/g, '\\$1');
-
-// Deteksi “pertanyaan dasar seputar sampah”
-const qaTriggers = /\b(apakah|apa|gimana|bagaimana|termasuk|masuk|dibuang\s*ke|ke\s*mana|dimana|di\s*mana)\b/i;
-const wasteTerms = /\b(sampah|organik|anorganik|b3|residu|plastik|kaca|kertas|kardus|logam|minyak\s*jelantah|oli|popok|styrofoam|stirofoam|e-?waste|elektronik|baterai|aki|kompos|bank\s*sampah|tps|tpst|tpa|limbah)\b/i;
-const isBasicWasteQuestion = (t = '') => (qaTriggers.test(t) || t.includes('?')) && wasteTerms.test(t);
+const sanitize = (s = '') =>
+  (s || '')
+    // escape karakter markdown WA
+    .replace(/([*_`~>])/g, '\\$1')
+    // cegah mention massal
+    .replace(/@everyone|@here/gi, '[mention]')
+    // rapikan spasi berlebih
+    .replace(/[ \t]+\n/g, '\n')
+    .trim();
 
 // ====== Daftar TPS (contoh) ======
 const daftarTPS = [
   { nama: 'TPSU 1', lat: -1.246358, lon: 116.838075, link: 'https://maps.app.goo.gl/HzWyFLVPHThJ86Pz6' },
   { nama: 'TPSU 2', lat: -1.246242, lon: 116.836864, link: 'https://maps.app.goo.gl/xyZHbSWoERRXr713A' },
   { nama: 'TPSU 3', lat: -1.243908, lon: 116.835673, link: 'https://maps.app.goo.gl/GnwcmoXMZz1hvGQW8' },
-  { nama: 'TPSU 4', lat: -1.246265, lon: 116.836940, link: 'https://maps.app.goo.gl/yNMgoDeeM3kwR4Cr7' },
-  { nama: 'TPSU 5', lat: -1.245770, lon: 116.837739, link: 'https://maps.app.goo.gl/13eHSbnnMwe1AvG68' },
+  { nama: 'TPSU 4', lat: -1.246265, lon: 116.83694,  link: 'https://maps.app.goo.gl/yNMgoDeeM3kwR4Cr7' },
+  { nama: 'TPSU 5', lat: -1.24577,  lon: 116.837739, link: 'https://maps.app.goo.gl/13eHSbnnMwe1AvG68' },
   { nama: 'TPSU 6', lat: -1.243526, lon: 116.843712, link: 'https://maps.app.goo.gl/jE81HCR8JmUyLaBB9' },
   { nama: 'TPSU 7', lat: -1.244069, lon: 116.846743, link: 'https://maps.app.goo.gl/Gi3eDfPDa1J4vACbA' },
   { nama: 'TPSU 8', lat: -1.244453, lon: 116.843198, link: 'https://maps.app.goo.gl/2WNpmWB2sAw8aT856' },
@@ -91,44 +94,104 @@ client.on('message', async (message) => {
   const textRaw = message.body || '';
   const text = textRaw.toLowerCase().trim();
 
-  // Handler lokasi → TPS terdekat
-  if (message.type === 'location' && message.location) {
-    const { latitude, longitude } = message.location;
-    const tpsTerdekat = daftarTPS.reduce((best, tps) => {
-      const jarak = hitungJarak(latitude, longitude, tps.lat, tps.lon);
-      return !best || jarak < best.jarak ? { ...tps, jarak } : best;
-    }, null);
+  try {
+    // ====== Handler lokasi → TPS terdekat ======
+    if (message.type === 'location' && message.location) {
+      const { latitude, longitude } = message.location;
+      const tpsTerdekat = daftarTPS.reduce((best, tps) => {
+        const jarak = hitungJarak(latitude, longitude, tps.lat, tps.lon);
+        return !best || jarak < best.jarak ? { ...tps, jarak } : best;
+      }, null);
 
-    return message.reply(
-      tpsTerdekat
-        ? `📍 TPS Terdekat:\n${tpsTerdekat.nama}\nJarak: ${tpsTerdekat.jarak.toFixed(2)} km\n${tpsTerdekat.link}`
-        : '❌ Tidak ditemukan TPS terdekat.'
-    );
-  }
+      return message.reply(
+        tpsTerdekat
+          ? `📍 TPS Terdekat:\n${tpsTerdekat.nama}\nJarak: ${tpsTerdekat.jarak.toFixed(2)} km\n${tpsTerdekat.link}`
+          : '❌ Tidak ditemukan TPS terdekat.'
+      );
+    }
 
-  // Sapaan singkat
-  const sapaan = ['halo', 'hai', 'assalamualaikum', 'selamat pagi', 'selamat siang', 'selamat sore', 'selamat malam'];
-  if (sapaan.includes(text)) {
-    return message.reply(
-      `👋 Hai! Saya *SKARA* (Sampah Karang Rejo Assistant).\n\n` +
-      `Saya bisa:\n` +
-      `1. 📸 Deteksi jenis sampah dari gambar\n` +
-      `2. 💡 Rekomendasi pengelolaan sampah\n` +
-      `3. 🗺️ Tunjukkan TPS terdekat (kirim lokasi)\n\n` +
-      `Kirim gambar sampah 📷 atau share lokasi 📍 ya!`
-    );
-  }
+    // ====== Sapaan singkat ======
+    const sapaan = ['halo', 'hai', 'assalamualaikum', 'selamat pagi', 'selamat siang', 'selamat sore', 'selamat malam'];
+    if (sapaan.includes(text)) {
+      return message.reply(
+        `👋 Hai! Saya *SKARA* (Sampah Karang Rejo Assistant).\n\n` +
+        `Saya bisa:\n` +
+        `1. 📸 Deteksi jenis sampah dari gambar\n` +
+        `2. 💡 Rekomendasi pengelolaan sampah\n` +
+        `3. 🗺️ Tunjukkan TPS terdekat (kirim lokasi)\n\n` +
+        `Kirim gambar sampah 📷 atau share lokasi 📍 ya!`
+      );
+    }
 
-  // Daftar TPS
-  if (text === '#tps') {
-    const list = daftarTPS.map((tps) => `📍 ${tps.nama}\n${tps.link}`).join('\n\n');
-    return message.reply(`Daftar lokasi TPS:\n\n${list}`);
-  }
+    // ====== Daftar TPS ======
+    if (text === '#tps') {
+      const list = daftarTPS.map((tps) => `📍 ${tps.nama}\n${tps.link}`).join('\n\n');
+      return message.reply(`Daftar lokasi TPS:\n\n${list}`);
+    }
 
-  // ====== Pertanyaan Dasar Seputar Sampah (pakai Gemini) ======
-  // Contoh: "apakah plastik organik?", "kardus termasuk apa?", "styrofoam dibuang ke mana?"
-  if (!message.hasMedia && text) {
-    if (isBasicWasteQuestion(textRaw)) {
+    // ====== Media (gambar) → Klasifikasi + rekomendasi ======
+    if (message.hasMedia) {
+      let media;
+      try {
+        await message.react('🖼️');
+        media = await message.downloadMedia();
+      } catch (e) {
+        console.error('❌ Gagal download media:', e.message);
+        return message.reply('❌ Gagal mengunduh gambar. Coba lagi ya.');
+      }
+      if (!media?.data) return message.reply('⚠️ Tidak ada gambar yang bisa diproses.');
+
+      // Optional: hanya terima gambar
+      if (media.mimetype && !media.mimetype.startsWith('image/')) {
+        return message.reply('⚠️ Kirim gambar ya, bukan file lain.');
+      }
+
+      const buffer = Buffer.from(media.data, 'base64');
+      const filePath = path.join(tempDir, `sampah_${Date.now()}.jpg`);
+      fs.writeFileSync(filePath, buffer);
+
+      try {
+        const formData = new FormData();
+        formData.append('file', fs.createReadStream(filePath));
+
+        // Timeout 60s (HF Space bisa cold start)
+        const { data } = await axios.post(API_URL, formData, {
+          headers: formData.getHeaders(),
+          timeout: 60000
+        });
+
+        const parent = data?.parent?.label ?? '-';
+        const pConf = Number(data?.parent?.confidence ?? 0);
+        const sub = data?.sub?.label ?? '-';
+        const sConf = Number(data?.sub?.confidence ?? 0);
+        const unsure = !!data?.parent?.uncertain;
+
+        const rekomendasi = hasGemini
+          ? await getRekomendasiGemini(nice(sub))
+          : 'Aktifkan GEMINI_API_KEY untuk rekomendasi.';
+
+        const top3 = (data?.top3_sub ?? [])
+          .map((t, i) => `${i + 1}) ${nice(t.label)} (${Number(t.confidence * 100).toFixed(1)}%)`)
+          .join('\n');
+
+        await message.reply(
+          `♻️ Klasifikasi: *${parent} → ${nice(sub)}*\n` +
+          `• Parent: ${(pConf * 100).toFixed(1)}%${unsure ? ' (ragu)' : ''}\n` +
+          `• Sub   : ${(sConf * 100).toFixed(1)}%\n` +
+          (top3 ? `\nTop-3 sub:\n${top3}\n` : '') +
+          `\n💡 Rekomendasi:\n${sanitize(rekomendasi)}`
+        );
+      } catch (e) {
+        console.error('❌ Error kirim ke API HF:', e.message);
+        await message.reply('⚠️ Gagal memproses gambar. Pastikan server AI aktif.');
+      } finally {
+        try { fs.unlinkSync(filePath); } catch {}
+      }
+      return;
+    }
+
+    // ====== Fallback teks → Gemini (khusus topik persampahan) ======
+    if (!message.hasMedia && text) {
       if (!hasGemini) {
         return message.reply('Aktifkan *GEMINI_API_KEY* agar saya bisa menjawab pertanyaan seputar sampah.');
       }
@@ -141,65 +204,9 @@ client.on('message', async (message) => {
         return message.reply('⚠️ Gagal menjawab saat ini. Coba lagi ya.');
       }
     }
-  }
-
-  // ====== Media (gambar) → Klasifikasi + rekomendasi ======
-  if (message.hasMedia) {
-    let media;
-    try {
-      media = await message.downloadMedia();
-    } catch (e) {
-      console.error('❌ Gagal download media:', e.message);
-      return message.reply('❌ Gagal mengunduh gambar. Coba lagi ya.');
-    }
-    if (!media?.data) return message.reply('⚠️ Tidak ada gambar yang bisa diproses.');
-
-    // Optional: filter hanya gambar
-    if (media.mimetype && !media.mimetype.startsWith('image/')) {
-      return message.reply('⚠️ Kirim gambar ya, bukan file lain.');
-    }
-
-    const buffer = Buffer.from(media.data, 'base64');
-    const filePath = path.join(tempDir, `sampah_${Date.now()}.jpg`);
-    fs.writeFileSync(filePath, buffer);
-
-    try {
-      const formData = new FormData();
-      formData.append('file', fs.createReadStream(filePath));
-
-      // Timeout 60s (HF Space bisa cold start)
-      const { data } = await axios.post(API_URL, formData, {
-        headers: formData.getHeaders(),
-        timeout: 60000
-      });
-
-      const parent = data?.parent?.label ?? '-';
-      const pConf = Number(data?.parent?.confidence ?? 0);
-      const sub = data?.sub?.label ?? '-';
-      const sConf = Number(data?.sub?.confidence ?? 0);
-      const unsure = !!data?.parent?.uncertain;
-
-      const rekomendasi = hasGemini
-        ? await getRekomendasiGemini(nice(sub))
-        : 'Aktifkan GEMINI_API_KEY untuk rekomendasi.';
-
-      const top3 = (data?.top3_sub ?? [])
-        .map((t, i) => `${i + 1}) ${nice(t.label)} (${Number(t.confidence * 100).toFixed(1)}%)`)
-        .join('\n');
-
-      await message.reply(
-        `♻️ Klasifikasi: *${parent} → ${nice(sub)}*\n` +
-          `• Parent: ${(pConf * 100).toFixed(1)}%${unsure ? ' (ragu)' : ''}\n` +
-          `• Sub   : ${(sConf * 100).toFixed(1)}%\n` +
-          (top3 ? `\nTop-3 sub:\n${top3}\n` : '') +
-          `\n💡 Rekomendasi:\n${sanitize(rekomendasi)}`
-      );
-    } catch (e) {
-      console.error('❌ Error kirim ke API HF:', e.message);
-      await message.reply('⚠️ Gagal memproses gambar. Pastikan server AI aktif.');
-    } finally {
-      try { fs.unlinkSync(filePath); } catch {}
-    }
+  } catch (err) {
+    console.error('❌ Uncaught handler error:', err?.message || err);
+    try { await message.reply('⚠️ Terjadi kesalahan tak terduga.'); } catch {}
   }
 });
 
@@ -249,3 +256,11 @@ Pertanyaan: """${pertanyaan}"""`;
     throw err;
   }
 }
+
+// ====== Safety: log unhandled errors ======
+process.on('unhandledRejection', (reason) => {
+  console.error('UNHANDLED REJECTION:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('UNCAUGHT EXCEPTION:', err);
+});
