@@ -288,7 +288,7 @@ client.on('message', async (message) => {
 async function getRekomendasiGemini(jenis, rid) {
   if (!hasGemini) return 'GEMINI_API_KEY belum di-set.';
   const prompt =
-`Kamu adalah asisten persampahan untuk masyarakat (Indonesia).
+`Kamu adalah asisten persampahan untuk masyarakat (Kelurahann Karang Rejo).
 Jenis sampah: ${jenis}
 Berikan 3 cara pengelolaan terbaik (poin).
 • Tulis ringkas, jelas, ramah.
@@ -312,7 +312,7 @@ Berikan 3 cara pengelolaan terbaik (poin).
 // ====== Gemini Helper: Jawab pertanyaan dasar seputar sampah ======
 async function jawabPertanyaanDasarGemini(pertanyaan, rid) {
   const prompt =
-`Peran: Kamu adalah SKARA, asisten persampahan untuk warga Karang Rejo.
+`Peran: Kamu adalah SKARA, asisten persampahan untuk warga desa Karang Rejo.
 Tugas: Jawab pertanyaan dasar seputar sampah secara singkat dan tepat.
 Aturan:
 - Fokus domain persampahan: kategori (organik/anorganik/residu/B3), cara buang, daur ulang, kompos, TPS, e-waste, minyak jelantah, dsb.
