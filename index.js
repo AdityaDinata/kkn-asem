@@ -1,6 +1,6 @@
 // index.js
-// Pastikan di package.json ada: "type": "module"
-// ENV: API_URL, GEMINI_API_KEY, GEMINI_MODEL (opsional), CHROMIUM_PATH (opsional)
+// -- Pastikan di package.json ada:  "type": "module"
+// -- ENV yang dipakai: API_URL, GEMINI_API_KEY, CHROMIUM_PATH (opsional)
 
 import wwebjs from 'whatsapp-web.js';
 const { Client, LocalAuth } = wwebjs;
@@ -14,18 +14,15 @@ import { fileURLToPath } from 'url';
 import { config } from 'dotenv';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-config();
 
+config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ====== ENV & init ======
-const API_URL = (process.env.API_URL || 'https://MakanKecoa-chatbot.hf.space/predict').trim();
-const GEMINI_KEY = (process.env.GEMINI_API_KEY || '').trim();
-const GEMINI_MODEL = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim();
-
+// ====== Konfigurasi API ======
+const API_URL = process.env.API_URL ?? 'https://MakanKecoa-chatbot.hf.space/predict';
+const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
 const genAI = GEMINI_KEY ? new GoogleGenerativeAI(GEMINI_KEY) : null;
-const hasGemini = !!genAI;
 
 // ====== WhatsApp Client ======
 const client = new Client({
@@ -46,30 +43,10 @@ const client = new Client({
 // ====== Utils ======
 const tempDir = path.join(__dirname, 'temp');
 if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
-
 const nice = (s = '') => s.replace(/_/g, ' ');
-function sanitizeWA(s = '') { return s.replace(/([_*~`>])/g, '\\$1'); }
-async function safeReply(message, text) { return message.reply(sanitizeWA(text ?? '')); }
-function cleanupFile(p) { try { fs.unlinkSync(p); } catch {} }
+const hasGemini = !!genAI;
 
-// === Debug & indikator typing ===
-let DEBUG = false;
-
-async function withTyping(message, fn) {
-  let chat;
-  try {
-    chat = await message.getChat();
-    if (chat?.sendStateTyping) await chat.sendStateTyping();
-  } catch {}
-  try {
-    const result = await fn();
-    return result;
-  } finally {
-    try { if (chat?.clearState) await chat.clearState(); } catch {}
-  }
-}
-
-// ====== Data TPS contoh ======
+// ====== Daftar TPS (contoh) ======
 const daftarTPS = [
   { nama: 'TPSU 1', lat: -1.246358, lon: 116.838075, link: 'https://maps.app.goo.gl/HzWyFLVPHThJ86Pz6' },
   { nama: 'TPSU 2', lat: -1.246242, lon: 116.836864, link: 'https://maps.app.goo.gl/xyZHbSWoERRXr713A' },
@@ -94,116 +71,18 @@ function hitungJarak(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// ====== Gemini helpers (SDK lama) ======
-function isKeyInvalidError(err) {
-  const m = (err?.message || '').toLowerCase();
-  return m.includes('api key not valid') || m.includes('api_key_invalid');
-}
-const withTimeout = (p, ms = 15000) =>
-  Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`Gemini timeout ${ms}ms`)), ms))]);
-
-async function askGemini25Strict(prompt) {
-  if (!genAI) throw new Error('Gemini not initialized');
-  if (DEBUG) console.log('[Gemini] CALL (strict) model =', GEMINI_MODEL);
-  const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
-  const res = await withTimeout(model.generateContent(prompt), 15000);
-  const txt = res?.response?.text?.() || '';
-  return txt.trim();
-}
-
-async function askGeminiPrefer25(prompt) {
-  if (!genAI) throw new Error('Gemini not initialized');
-  const prefer = GEMINI_MODEL || 'gemini-2.5-flash';
-  try {
-    if (DEBUG) console.log('[Gemini] TRY', prefer);
-    const model = genAI.getGenerativeModel({ model: prefer });
-    const res = await withTimeout(model.generateContent(prompt), 15000);
-    const out = res?.response?.text?.() || '';
-    if (out.trim()) return out.trim();
-    throw new Error('Empty response');
-  } catch (e) {
-    if (isKeyInvalidError(e)) throw e;
-    const fb = 'gemini-1.5-flash';
-    console.warn('⚠️ Prefer failed:', prefer, '-', e?.message || e, '➡️ Fallback:', fb);
-    const model2 = genAI.getGenerativeModel({ model: fb });
-    const res2 = await withTimeout(model2.generateContent(prompt), 15000);
-    return (res2?.response?.text?.() || '').trim();
-  }
-}
-
-async function getRekomendasiGemini(jenis) {
-  if (!hasGemini) return 'GEMINI_API_KEY belum di-set.';
-  const prompt =
-`Jenis sampah: ${jenis}
-Berikan 3 cara pengelolaan terbaik (poin).
-Format:
-• ...
-• ...
-• ...
-Bahasa santai dan mudah dipahami masyarakat.`;
-  try {
-    const ai = await askGeminiPrefer25(prompt);
-    return ai || '⚠️ Tidak ada rekomendasi dari AI.';
-  } catch (err) {
-    console.error('❌ Gemini error:', err?.message || err);
-    if (isKeyInvalidError(err)) return '⚠️ API kunci tidak valid. Hubungi admin.';
-    return '⚠️ AI sedang sibuk, coba lagi nanti.';
-  }
-}
-
-// ====== Lifecycle ======
+// ====== WhatsApp Lifecycle ======
 client.on('qr', (qr) => qrcode.generate(qr, { small: true }));
-client.on('ready', () => {
-  console.log('[BOOT]', __filename);
-  console.log('✅ Bot WhatsApp siap digunakan!');
-  console.log('[BOOT] SDK = @google/generative-ai, MODEL =', GEMINI_MODEL);
-  console.log('[BOOT] GEMINI KEY tail =', GEMINI_KEY ? GEMINI_KEY.slice(-4) : 'EMPTY');
-  console.log('[BOOT] API_URL =', API_URL);
-});
+client.on('ready', () => console.log('✅ Bot WhatsApp siap digunakan!'));
 client.on('auth_failure', (m) => console.error('❌ Auth failure:', m));
 client.on('disconnected', (r) => console.error('⚠️ Disconnected:', r));
 client.initialize();
 
 // ====== Handler Pesan ======
 client.on('message', async (message) => {
-  const textRaw = message.body ?? '';
-  const text = textRaw.toLowerCase().trim();
-  console.log('[MSG]', { type: message.type, from: message.from, body: textRaw.slice(0, 120) });
+  const text = message.body?.toLowerCase().trim();
 
-  // ---- Toggle DEBUG / util ----
-  if (text === '#debug on') { DEBUG = true; await safeReply(message, 'DEBUG = ON'); return; }
-  if (text === '#debug off') { DEBUG = false; await safeReply(message, 'DEBUG = OFF'); return; }
-  if (text === '?env') { await safeReply(message, `MODEL=${GEMINI_MODEL} | KEY=*${GEMINI_KEY?.slice(-4) || 'NONE'}`); return; }
-  if (text.startsWith('?echo ')) { await safeReply(message, textRaw.slice(6)); return; }
-
-  // ---- Debug cmds ----
-  if (text === '#ping') return safeReply(message, 'pong');
-
-  if (text === '#test25') {
-    if (!hasGemini) return safeReply(message, 'GEMINI_API_KEY belum terpasang.');
-    try {
-      const out = await askGeminiPrefer25('Balas persis: 25 OK');
-      return safeReply(message, out || 'no text');
-    } catch (e) {
-      console.error('❌ Test25:', e?.message || e);
-      return safeReply(message, isKeyInvalidError(e) ? 'API key invalid. Cek .env' : `Gemini error: ${e?.message || e}`);
-    }
-  }
-
-  if (text === '#force25') {
-    if (!hasGemini) return safeReply(message, 'GEMINI_API_KEY belum terpasang.');
-    try {
-      const out = await askGemini25Strict('Balas persis: FORCE 25 OK');
-      return safeReply(message, out || 'no text');
-    } catch (e) {
-      console.error('❌ force25:', e?.message || e);
-      return safeReply(message, isKeyInvalidError(e)
-        ? 'API key invalid / 2.5 ditolak oleh project key.'
-        : `Error 2.5: ${e?.message || e}`);
-    }
-  }
-
-  // ---- Lokasi → TPS terdekat ----
+  // Handler lokasi → TPS terdekat
   if (message.type === 'location' && message.location) {
     const { latitude, longitude } = message.location;
     const tpsTerdekat = daftarTPS.reduce((best, tps) => {
@@ -211,72 +90,57 @@ client.on('message', async (message) => {
       return !best || jarak < best.jarak ? { ...tps, jarak } : best;
     }, null);
 
-    return safeReply(
-      message,
+    return message.reply(
       tpsTerdekat
         ? `📍 TPS Terdekat:\n${tpsTerdekat.nama}\nJarak: ${tpsTerdekat.jarak.toFixed(2)} km\n${tpsTerdekat.link}`
         : '❌ Tidak ditemukan TPS terdekat.'
     );
   }
 
-  // ---- Sapaan → Gemini (fallback statis) ----
+  // Sapaan singkat
   const sapaan = ['halo', 'hai', 'assalamualaikum', 'selamat pagi', 'selamat siang', 'selamat sore', 'selamat malam'];
   if (sapaan.includes(text)) {
-    if (hasGemini) {
-      try {
-        const ai = await askGeminiPrefer25(
-`Kamu adalah SKARA, asisten pengelolaan sampah untuk warga.
-Balas sapaan singkat ramah. Hanya seputar layanan sampah. Di akhir, tampilkan menu berikut persis:
-
-Saya bisa:
-1. 📸 Deteksi jenis sampah dari gambar
-2. 💡 Rekomendasi pengelolaan sampah
-3. 🗺️ Tunjukkan TPS terdekat (kirim lokasi)`
-        );
-        if (ai) return safeReply(message, ai);
-      } catch (e) {
-        console.error('❌ Gemini greet error:', e?.message || e);
-      }
-    }
-    return safeReply(
-      message,
-      `👋 Hai! Saya SKARA (Sampah Karang Rejo Assistant).
-
-Saya bisa:
-1. 📸 Deteksi jenis sampah dari gambar
-2. 💡 Rekomendasi pengelolaan sampah
-3. 🗺️ Tunjukkan TPS terdekat (kirim lokasi)
-
-Kirim gambar sampah 📷 atau share lokasi 📍 ya!`
+    return message.reply(
+      `👋 Hai! Saya *SKARA* (Sampah Karang Rejo Assistant).\n\n` +
+      `Saya bisa:\n` +
+      `1. 📸 Deteksi jenis sampah dari gambar\n` +
+      `2. 💡 Rekomendasi pengelolaan sampah\n` +
+      `3. 🗺️ Tunjukkan TPS terdekat (kirim lokasi)\n\n` +
+      `Kirim gambar sampah 📷 atau share lokasi 📍 ya!`
     );
   }
 
-  // ---- Daftar TPS ----
+  // Daftar TPS
   if (text === '#tps') {
     const list = daftarTPS.map((tps) => `📍 ${tps.nama}\n${tps.link}`).join('\n\n');
-    return safeReply(message, `Daftar lokasi TPS:\n\n${list}`);
+    return message.reply(`Daftar lokasi TPS:\n\n${list}`);
   }
 
-  // ---- Media (gambar) → klasifikasi + rekomendasi ----
+  // Media (gambar)
   if (message.hasMedia) {
     let media;
     try {
       media = await message.downloadMedia();
     } catch (e) {
       console.error('❌ Gagal download media:', e.message);
-      return safeReply(message, '❌ Gagal mengunduh gambar. Coba lagi ya.');
+      return message.reply('❌ Gagal mengunduh gambar. Coba lagi ya.');
     }
-    if (!media?.data) return safeReply(message, '⚠️ Tidak ada gambar yang bisa diproses.');
+    if (!media?.data) return message.reply('⚠️ Tidak ada gambar yang bisa diproses.');
+
+    // Optional: filter hanya gambar
     if (media.mimetype && !media.mimetype.startsWith('image/')) {
-      return safeReply(message, '⚠️ Kirim gambar ya, bukan file lain.');
+      return message.reply('⚠️ Kirim gambar ya, bukan file lain.');
     }
 
+    const buffer = Buffer.from(media.data, 'base64');
     const filePath = path.join(tempDir, `sampah_${Date.now()}.jpg`);
+    fs.writeFileSync(filePath, buffer);
+
     try {
-      fs.writeFileSync(filePath, Buffer.from(media.data, 'base64'));
       const formData = new FormData();
       formData.append('file', fs.createReadStream(filePath));
 
+      // Timeout 60s (HF Space bisa cold start)
       const { data } = await axios.post(API_URL, formData, {
         headers: formData.getHeaders(),
         timeout: 60000
@@ -296,83 +160,41 @@ Kirim gambar sampah 📷 atau share lokasi 📍 ya!`
         .map((t, i) => `${i + 1}) ${nice(t.label)} (${Number(t.confidence * 100).toFixed(1)}%)`)
         .join('\n');
 
-      await safeReply(
-        message,
+      await message.reply(
         `♻️ Klasifikasi: *${parent} → ${nice(sub)}*\n` +
-        `• Parent: ${(pConf * 100).toFixed(1)}%${unsure ? ' (ragu)' : ''}\n` +
-        `• Sub   : ${(sConf * 100).toFixed(1)}%\n` +
-        (top3 ? `\nTop-3 sub:\n${top3}\n` : '') +
-        `\n💡 Rekomendasi:\n${rekomendasi}`
+          `• Parent: ${(pConf * 100).toFixed(1)}%${unsure ? ' (ragu)' : ''}\n` +
+          `• Sub   : ${(sConf * 100).toFixed(1)}%\n` +
+          (top3 ? `\nTop-3 sub:\n${top3}\n` : '') +
+          `\n💡 Rekomendasi:\n${rekomendasi}`
       );
-      return;
     } catch (e) {
       console.error('❌ Error kirim ke API HF:', e.message);
-      await safeReply(message, '⚠️ Gagal memproses gambar. Pastikan server AI aktif.');
+      await message.reply('⚠️ Gagal memproses gambar. Pastikan server AI aktif.');
     } finally {
-      cleanupFile(filePath);
+      try { fs.unlinkSync(filePath); } catch {}
     }
   }
+});
 
-  // ---- Teks generik → SELALU lewat Gemini (biar Gemini yang filter topik) ----
-  if (hasGemini && text) {
-    // beri reaksi agar di WA terlihat sedang proses
-    try { await message.react('🧠'); } catch {}
+// ====== Gemini Helper ======
+async function getRekomendasiGemini(jenis) {
+  if (!hasGemini) return 'GEMINI_API_KEY belum di-set.';
+  const prompt =
+`Jenis sampah: ${jenis}
+Berikan 3 cara pengelolaan terbaik (poin).
+Format:
+• ...
+• ...
+• ...
+Bahasa santai dan mudah dipahami masyarakat.`;
 
-    try {
-      const prompt =
-`Anda adalah SKARA, asisten WhatsApp untuk pengelolaan sampah.
-Aturan:
-- Jawab HANYA jika pertanyaannya terkait sampah (jenis/kategori, organik–anorganik–residu–B3, kompos/daur ulang, TPS).
-- Jika di luar topik, balas: "Maaf, saya hanya bantu topik sampah."
-- Jawab ringkas, jelas, dan aplikatif untuk warga.
-- Jika klasifikasi seperti "apakah plastik organik" / "kardus termasuk apa", jawab kategori + 1–3 tips singkat.
-
-Pertanyaan pengguna:
-"${textRaw}"
-
-Balas dalam 1–5 baris.`;
-
-      if (DEBUG) {
-        console.log('[QA] PROMPT >>>');
-        console.log(prompt);
-      }
-
-      const ai = await withTyping(message, async () => await askGeminiPrefer25(prompt));
-      const finalText = ai && ai.trim()
-        ? ai.trim()
-        : '⚠️ Maaf, belum bisa menjawab. Coba tanya ulang seputar sampah ya.';
-
-      if (DEBUG) {
-        console.log('[QA] AI TEXT <<<', (finalText || '').slice(0, 400));
-      }
-
-      await safeReply(message, finalText);
-      try { await message.react('✅'); } catch {}
-      return;
-
-    } catch (e) {
-      console.error('❌ Gemini QA error:', e?.message || e);
-      const fallback = isKeyInvalidError(e)
-        ? '⚠️ API key invalid. Cek .env'
-        : '⚠️ AI error. Coba lagi sebentar ya.';
-      await safeReply(message, fallback);
-      try { await message.react('❌'); } catch {}
-      return;
-    }
+  try {
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+    const result = await model.generateContent(prompt);
+    const teks = result?.response?.text();
+    return teks || '⚠️ Tidak ada rekomendasi dari AI.';
+  } catch (err) {
+    console.error('❌ Gemini error:', err?.message || err);
+    return '⚠️ AI sedang sibuk, coba lagi nanti.';
   }
-
-  // ---- Fallback terakhir ----
-  return safeReply(message, '👋 Hai! Tanyakan hal seputar *sampah* ya. Contoh: "kardus termasuk apa?", "plastik organik atau anorganik?"');
-});
-
-// ====== Graceful shutdown ======
-process.on('SIGINT', async () => {
-  console.log('🔻 SIGINT diterima. Menutup client...');
-  try { await client.destroy(); } catch {}
-  process.exit(0);
-});
-process.on('SIGTERM', async () => {
-  console.log('🔻 SIGTERM diterima. Menutup client...');
-  try { await client.destroy(); } catch {}
-  process.exit(0);
-});
+}
