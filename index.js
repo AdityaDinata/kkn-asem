@@ -42,6 +42,7 @@ const client = new Client({
 // ====== Utils ======
 const tempDir = path.join(__dirname, 'temp');
 if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
+
 const nice = (s = '') => s.replace(/_/g, ' ');
 const hasGemini = !!genAI;
 
@@ -49,8 +50,9 @@ const hasGemini = !!genAI;
 const sanitize = (s = '') => s.replace(/([*_`~>])/g, '\\$1');
 
 // Deteksi “pertanyaan dasar seputar sampah”
-const wasteKeywords = /\b(sampah|organik|anorganik|b3|residu|plastik|kaca|kertas|kardus|kompos|daur\s*ulang|reduce|reuse|recycle|tps|tpst|elektronik|e-?waste|styrofoam|popok|minyak\s*jelantah|oli|limbah|bank\s*sampah)\b/i;
-const isBasicWasteQuestion = (t = '') => wasteKeywords.test(t);
+const qaTriggers = /\b(apakah|apa|gimana|bagaimana|termasuk|masuk|dibuang\s*ke|ke\s*mana|dimana|di\s*mana)\b/i;
+const wasteTerms = /\b(sampah|organik|anorganik|b3|residu|plastik|kaca|kertas|kardus|logam|minyak\s*jelantah|oli|popok|styrofoam|stirofoam|e-?waste|elektronik|baterai|aki|kompos|bank\s*sampah|tps|tpst|tpa|limbah)\b/i;
+const isBasicWasteQuestion = (t = '') => (qaTriggers.test(t) || t.includes('?')) && wasteTerms.test(t);
 
 // ====== Daftar TPS (contoh) ======
 const daftarTPS = [
@@ -126,16 +128,16 @@ client.on('message', async (message) => {
   // ====== Pertanyaan Dasar Seputar Sampah (pakai Gemini) ======
   // Contoh: "apakah plastik organik?", "kardus termasuk apa?", "styrofoam dibuang ke mana?"
   if (!message.hasMedia && text) {
-    if (!hasGemini && isBasicWasteQuestion(textRaw)) {
-      return message.reply('Aktifkan *GEMINI_API_KEY* terlebih dahulu untuk menjawab pertanyaan seputar sampah.');
-    }
-    if (hasGemini && isBasicWasteQuestion(textRaw)) {
+    if (isBasicWasteQuestion(textRaw)) {
+      if (!hasGemini) {
+        return message.reply('Aktifkan *GEMINI_API_KEY* agar saya bisa menjawab pertanyaan seputar sampah.');
+      }
       try {
         await message.react('💬');
         const jawaban = await jawabPertanyaanDasarGemini(textRaw);
-        return message.reply(jawaban);
+        return message.reply(sanitize(jawaban));
       } catch (e) {
-        console.error('❌ Error QA Gemini:', e?.message || e);
+        console.error('❌ Gemini QA error:', e?.message || e);
         return message.reply('⚠️ Gagal menjawab saat ini. Coba lagi ya.');
       }
     }
@@ -237,8 +239,13 @@ Aturan:
 
 Pertanyaan: """${pertanyaan}"""`;
 
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-  const res = await model.generateContent(prompt);
-  const teks = res?.response?.text() || 'Maaf, belum bisa menjawab saat ini.';
-  return sanitize(teks);
+  try {
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+    const res = await model.generateContent(prompt);
+    const teks = res?.response?.text() || 'Maaf, belum bisa menjawab saat ini.';
+    return teks;
+  } catch (err) {
+    console.error('❌ Gemini QA error:', err?.message || err);
+    throw err;
+  }
 }
