@@ -1,6 +1,6 @@
 // index.js
 // -- Pastikan di package.json ada:  "type": "module"
-// -- ENV yang dipakai: API_URL, GEMINI_API_KEY, CHROMIUM_PATH (opsional)
+// -- ENV: API_URL, GEMINI_API_KEY, CHROMIUM_PATH (opsional), LOG_LEVEL (error|warn|info|debug), DEBUG (opsional: whatsapp-web.js:*)
 
 import wwebjs from 'whatsapp-web.js';
 const { Client, LocalAuth } = wwebjs;
@@ -13,6 +13,7 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { config } from 'dotenv';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { randomUUID } from 'crypto';
 
 config();
 const __filename = fileURLToPath(import.meta.url);
@@ -22,6 +23,33 @@ const __dirname = path.dirname(__filename);
 const API_URL = process.env.API_URL ?? 'https://MakanKecoa-chatbot.hf.space/predict';
 const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
 const genAI = GEMINI_KEY ? new GoogleGenerativeAI(GEMINI_KEY) : null;
+const hasGemini = !!genAI;
+
+// ====== Logger Sederhana (console + file JSONL per hari) ======
+const logsDir = path.join(__dirname, 'logs');
+if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir);
+
+const LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
+const LEVEL_NAME = (process.env.LOG_LEVEL || 'info').toLowerCase();
+const MIN_LEVEL = LEVELS[LEVEL_NAME] ?? 2;
+
+function logWrite(line) {
+  const file = path.join(logsDir, `${new Date().toISOString().slice(0, 10)}.log`);
+  fs.appendFile(file, line + '\n', () => {});
+}
+
+function log(level, msg, meta = undefined) {
+  const lv = LEVELS[level] ?? 2;
+  if (lv > MIN_LEVEL) return;
+  const entry = { ts: new Date().toISOString(), level, msg, ...meta };
+  const line = JSON.stringify(entry);
+  if (level === 'error') {
+    console.error(`[${entry.ts}] [${level}] ${msg}`, meta?.err || meta || '');
+  } else {
+    console.log(`[${entry.ts}] [${level}] ${msg}`, meta || '');
+  }
+  logWrite(line);
+}
 
 // ====== WhatsApp Client ======
 const client = new Client({
@@ -44,18 +72,31 @@ const tempDir = path.join(__dirname, 'temp');
 if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
 
 const nice = (s = '') => s.replace(/_/g, ' ').trim();
-const hasGemini = !!genAI;
 
-// Escape karakter yang bikin formatting WA berantakan pada output AI
-const sanitize = (s = '') =>
-  (s || '')
-    // escape karakter markdown WA
-    .replace(/([*_`~>])/g, '\\$1')
-    // cegah mention massal
-    .replace(/@everyone|@here/gi, '[mention]')
-    // rapikan spasi berlebih
-    .replace(/[ \t]+\n/g, '\n')
+// ====== FILTER WA (pakai regex kamu persis) ======
+function filterWA(input = '') {
+  const part = String(input ?? '');
+  let text = part.trim()
+    .replace(/`{3}[\s\S]*?`{3}/g, '')                        // Hapus blok kode
+    .replace(/`([^`\n]+)`/g, '$1')                           // Hapus inline code
+    .replace(/\*\*(.*?)\*\*/g, '*$1*')                       // Ubah markdown bold jadi WhatsApp bold
+    .replace(/__(.*?)__/g, '*$1*')                           // Ubah __teks__ jadi *teks*
+    .replace(/~~(.*?)~~/g, '~$1~')                           // Ubah markdown strikethrough jadi WhatsApp
+    .replace(/\[(.*?)\]\((.*?)\)/g, '$1: $2')                // Ubah [teks](link) jadi teks: link
+    .replace(/[-*+]\s+/g, '• ')                              // Bullet list
+    .replace(/\d+\.\s+/g, '')                                // Hapus numbering list
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/[ \t]+\n/g, '\n')                              // Trim spasi di akhir baris
+    .replace(/\n[ \t]+/g, '\n')                              // Trim spasi di awal baris
+    .replace(/\n{3,}/g, '\n\n')                              // Maks 2 newline
+    .replace(/[^\x00-\x7F]+/g, '')                           // Hapus emoji/asing
+    .replace(/[^\w\s.,:;!?'"()\-\•\[\]`~<>\/\\]+/g, '')      // Hapus karakter aneh
     .trim();
+  return text;
+}
 
 // ====== Daftar TPS (contoh) ======
 const daftarTPS = [
@@ -83,26 +124,42 @@ function hitungJarak(lat1, lon1, lat2, lon2) {
 }
 
 // ====== WhatsApp Lifecycle ======
-client.on('qr', (qr) => qrcode.generate(qr, { small: true }));
-client.on('ready', () => console.log('✅ Bot WhatsApp siap digunakan!'));
-client.on('auth_failure', (m) => console.error('❌ Auth failure:', m));
-client.on('disconnected', (r) => console.error('⚠️ Disconnected:', r));
+client.on('qr', (qr) => {
+  log('info', 'QR generated');
+  qrcode.generate(qr, { small: true });
+});
+client.on('ready', () => log('info', 'Bot WhatsApp siap digunakan!', { pid: process.pid, node: process.versions.node, hasGemini }));
+client.on('auth_failure', (m) => log('error', 'Auth failure', { err: m }));
+client.on('disconnected', (r) => log('warn', 'Disconnected', { reason: r }));
 client.initialize();
 
 // ====== Handler Pesan ======
 client.on('message', async (message) => {
+  // Trace ID untuk jejak log per pesan
+  const rid = randomUUID().slice(0, 8);
   const textRaw = message.body || '';
   const text = textRaw.toLowerCase().trim();
+
+  log('info', 'Incoming message', {
+    rid,
+    from: message.from,
+    type: message.type,
+    hasMedia: message.hasMedia,
+    textPreview: textRaw.slice(0, 140)
+  });
 
   try {
     // ====== Handler lokasi → TPS terdekat ======
     if (message.type === 'location' && message.location) {
       const { latitude, longitude } = message.location;
+      log('debug', 'Location received', { rid, latitude, longitude });
+
       const tpsTerdekat = daftarTPS.reduce((best, tps) => {
         const jarak = hitungJarak(latitude, longitude, tps.lat, tps.lon);
         return !best || jarak < best.jarak ? { ...tps, jarak } : best;
       }, null);
 
+      log('info', 'Nearest TPS computed', { rid, found: !!tpsTerdekat, tps: tpsTerdekat?.nama, jarak: tpsTerdekat?.jarak });
       return message.reply(
         tpsTerdekat
           ? `📍 TPS Terdekat:\n${tpsTerdekat.nama}\nJarak: ${tpsTerdekat.jarak.toFixed(2)} km\n${tpsTerdekat.link}`
@@ -113,6 +170,7 @@ client.on('message', async (message) => {
     // ====== Sapaan singkat ======
     const sapaan = ['halo', 'hai', 'assalamualaikum', 'selamat pagi', 'selamat siang', 'selamat sore', 'selamat malam'];
     if (sapaan.includes(text)) {
+      log('debug', 'Greeting detected', { rid });
       return message.reply(
         `👋 Hai! Saya *SKARA* (Sampah Karang Rejo Assistant).\n\n` +
         `Saya bisa:\n` +
@@ -125,6 +183,7 @@ client.on('message', async (message) => {
 
     // ====== Daftar TPS ======
     if (text === '#tps') {
+      log('debug', 'List TPS requested', { rid });
       const list = daftarTPS.map((tps) => `📍 ${tps.nama}\n${tps.link}`).join('\n\n');
       return message.reply(`Daftar lokasi TPS:\n\n${list}`);
     }
@@ -136,38 +195,49 @@ client.on('message', async (message) => {
         await message.react('🖼️');
         media = await message.downloadMedia();
       } catch (e) {
-        console.error('❌ Gagal download media:', e.message);
+        log('error', 'Gagal download media', { rid, err: e?.stack || e?.message || e });
         return message.reply('❌ Gagal mengunduh gambar. Coba lagi ya.');
       }
-      if (!media?.data) return message.reply('⚠️ Tidak ada gambar yang bisa diproses.');
+      if (!media?.data) {
+        log('warn', 'No media data', { rid });
+        return message.reply('⚠️ Tidak ada gambar yang bisa diproses.');
+      }
 
-      // Optional: hanya terima gambar
       if (media.mimetype && !media.mimetype.startsWith('image/')) {
+        log('warn', 'Non-image media blocked', { rid, mimetype: media.mimetype });
         return message.reply('⚠️ Kirim gambar ya, bukan file lain.');
       }
 
       const buffer = Buffer.from(media.data, 'base64');
       const filePath = path.join(tempDir, `sampah_${Date.now()}.jpg`);
       fs.writeFileSync(filePath, buffer);
+      log('debug', 'Media saved', { rid, filePath });
 
       try {
         const formData = new FormData();
         formData.append('file', fs.createReadStream(filePath));
 
-        // Timeout 60s (HF Space bisa cold start)
-        const { data } = await axios.post(API_URL, formData, {
+        const t0 = Date.now();
+        const resp = await axios.post(API_URL, formData, {
           headers: formData.getHeaders(),
           timeout: 60000
         });
+        const latency = Date.now() - t0;
 
+        const data = resp?.data ?? {};
         const parent = data?.parent?.label ?? '-';
         const pConf = Number(data?.parent?.confidence ?? 0);
         const sub = data?.sub?.label ?? '-';
         const sConf = Number(data?.sub?.confidence ?? 0);
         const unsure = !!data?.parent?.uncertain;
 
+        log('info', 'HF API success', {
+          rid, status: resp?.status, latency_ms: latency,
+          parent, pConf, sub, sConf, unsure
+        });
+
         const rekomendasi = hasGemini
-          ? await getRekomendasiGemini(nice(sub))
+          ? await getRekomendasiGemini(nice(sub), rid)
           : 'Aktifkan GEMINI_API_KEY untuk rekomendasi.';
 
         const top3 = (data?.top3_sub ?? [])
@@ -179,13 +249,13 @@ client.on('message', async (message) => {
           `• Parent: ${(pConf * 100).toFixed(1)}%${unsure ? ' (ragu)' : ''}\n` +
           `• Sub   : ${(sConf * 100).toFixed(1)}%\n` +
           (top3 ? `\nTop-3 sub:\n${top3}\n` : '') +
-          `\n💡 Rekomendasi:\n${sanitize(rekomendasi)}`
+          `\n💡 Rekomendasi:\n${filterWA(rekomendasi)}`
         );
       } catch (e) {
-        console.error('❌ Error kirim ke API HF:', e.message);
+        log('error', 'Error kirim ke API HF', { rid, err: e?.stack || e?.message || e });
         await message.reply('⚠️ Gagal memproses gambar. Pastikan server AI aktif.');
       } finally {
-        try { fs.unlinkSync(filePath); } catch {}
+        try { fs.unlinkSync(filePath); log('debug', 'Temp file deleted', { rid, filePath }); } catch {}
       }
       return;
     }
@@ -193,25 +263,29 @@ client.on('message', async (message) => {
     // ====== Fallback teks → Gemini (khusus topik persampahan) ======
     if (!message.hasMedia && text) {
       if (!hasGemini) {
+        log('warn', 'No GEMINI_API_KEY set', { rid });
         return message.reply('Aktifkan *GEMINI_API_KEY* agar saya bisa menjawab pertanyaan seputar sampah.');
       }
       try {
         await message.react('💬');
-        const jawaban = await jawabPertanyaanDasarGemini(textRaw);
-        return message.reply(sanitize(jawaban));
+        const t0 = Date.now();
+        const jawaban = await jawabPertanyaanDasarGemini(textRaw, rid);
+        const latency = Date.now() - t0;
+        log('info', 'Gemini QA success', { rid, latency_ms: latency, chars: jawaban?.length ?? 0 });
+        return message.reply(filterWA(jawaban));
       } catch (e) {
-        console.error('❌ Gemini QA error:', e?.message || e);
+        log('error', 'Gemini QA error', { rid, err: e?.stack || e?.message || e });
         return message.reply('⚠️ Gagal menjawab saat ini. Coba lagi ya.');
       }
     }
   } catch (err) {
-    console.error('❌ Uncaught handler error:', err?.message || err);
+    log('error', 'Uncaught handler error', { rid, err: err?.stack || err?.message || err });
     try { await message.reply('⚠️ Terjadi kesalahan tak terduga.'); } catch {}
   }
 });
 
 // ====== Gemini Helper: Rekomendasi dari jenis (hasil klasifikasi gambar) ======
-async function getRekomendasiGemini(jenis) {
+async function getRekomendasiGemini(jenis, rid) {
   if (!hasGemini) return 'GEMINI_API_KEY belum di-set.';
   const prompt =
 `Kamu adalah asisten persampahan untuk masyarakat (Indonesia).
@@ -222,18 +296,21 @@ Berikan 3 cara pengelolaan terbaik (poin).
 • Kalau berbahaya, tekankan kehati-hatian.`;
 
   try {
+    const t0 = Date.now();
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
     const result = await model.generateContent(prompt);
     const teks = result?.response?.text();
+    const latency = Date.now() - t0;
+    log('debug', 'Gemini recommend success', { rid, latency_ms: latency, jenis, ok: !!teks });
     return teks || '⚠️ Tidak ada rekomendasi dari AI.';
   } catch (err) {
-    console.error('❌ Gemini error:', err?.message || err);
+    log('error', 'Gemini recommend error', { rid, err: err?.stack || err?.message || err });
     return '⚠️ AI sedang sibuk, coba lagi nanti.';
   }
 }
 
 // ====== Gemini Helper: Jawab pertanyaan dasar seputar sampah ======
-async function jawabPertanyaanDasarGemini(pertanyaan) {
+async function jawabPertanyaanDasarGemini(pertanyaan, rid) {
   const prompt =
 `Peran: Kamu adalah SKARA, asisten persampahan untuk warga Indonesia.
 Tugas: Jawab pertanyaan dasar seputar sampah secara singkat dan tepat.
@@ -252,15 +329,23 @@ Pertanyaan: """${pertanyaan}"""`;
     const teks = res?.response?.text() || 'Maaf, belum bisa menjawab saat ini.';
     return teks;
   } catch (err) {
-    console.error('❌ Gemini QA error:', err?.message || err);
+    // dilempar ke caller supaya dicatat juga di sana
     throw err;
   }
 }
 
-// ====== Safety: log unhandled errors ======
+// ====== Safety: Global error handlers ======
 process.on('unhandledRejection', (reason) => {
-  console.error('UNHANDLED REJECTION:', reason);
+  log('error', 'UNHANDLED REJECTION', { err: (reason && reason.stack) || String(reason) });
 });
 process.on('uncaughtException', (err) => {
-  console.error('UNCAUGHT EXCEPTION:', err);
+  log('error', 'UNCAUGHT EXCEPTION', { err: err?.stack || err?.message || err });
+});
+
+// ====== Log startup ======
+log('info', 'Bot starting', {
+  pid: process.pid,
+  node: process.versions.node,
+  logLevel: LEVEL_NAME,
+  hasGemini
 });
