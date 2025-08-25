@@ -14,7 +14,6 @@ import { fileURLToPath } from 'url';
 import { config } from 'dotenv';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-
 config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -45,6 +44,13 @@ const tempDir = path.join(__dirname, 'temp');
 if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
 const nice = (s = '') => s.replace(/_/g, ' ');
 const hasGemini = !!genAI;
+
+// Escape karakter yang bikin formatting WA berantakan pada output AI
+const sanitize = (s = '') => s.replace(/([*_`~>])/g, '\\$1');
+
+// Deteksi “pertanyaan dasar seputar sampah”
+const wasteKeywords = /\b(sampah|organik|anorganik|b3|residu|plastik|kaca|kertas|kardus|kompos|daur\s*ulang|reduce|reuse|recycle|tps|tpst|elektronik|e-?waste|styrofoam|popok|minyak\s*jelantah|oli|limbah|bank\s*sampah)\b/i;
+const isBasicWasteQuestion = (t = '') => wasteKeywords.test(t);
 
 // ====== Daftar TPS (contoh) ======
 const daftarTPS = [
@@ -80,7 +86,8 @@ client.initialize();
 
 // ====== Handler Pesan ======
 client.on('message', async (message) => {
-  const text = message.body?.toLowerCase().trim();
+  const textRaw = message.body || '';
+  const text = textRaw.toLowerCase().trim();
 
   // Handler lokasi → TPS terdekat
   if (message.type === 'location' && message.location) {
@@ -116,7 +123,25 @@ client.on('message', async (message) => {
     return message.reply(`Daftar lokasi TPS:\n\n${list}`);
   }
 
-  // Media (gambar)
+  // ====== Pertanyaan Dasar Seputar Sampah (pakai Gemini) ======
+  // Contoh: "apakah plastik organik?", "kardus termasuk apa?", "styrofoam dibuang ke mana?"
+  if (!message.hasMedia && text) {
+    if (!hasGemini && isBasicWasteQuestion(textRaw)) {
+      return message.reply('Aktifkan *GEMINI_API_KEY* terlebih dahulu untuk menjawab pertanyaan seputar sampah.');
+    }
+    if (hasGemini && isBasicWasteQuestion(textRaw)) {
+      try {
+        await message.react('💬');
+        const jawaban = await jawabPertanyaanDasarGemini(textRaw);
+        return message.reply(jawaban);
+      } catch (e) {
+        console.error('❌ Error QA Gemini:', e?.message || e);
+        return message.reply('⚠️ Gagal menjawab saat ini. Coba lagi ya.');
+      }
+    }
+  }
+
+  // ====== Media (gambar) → Klasifikasi + rekomendasi ======
   if (message.hasMedia) {
     let media;
     try {
@@ -165,7 +190,7 @@ client.on('message', async (message) => {
           `• Parent: ${(pConf * 100).toFixed(1)}%${unsure ? ' (ragu)' : ''}\n` +
           `• Sub   : ${(sConf * 100).toFixed(1)}%\n` +
           (top3 ? `\nTop-3 sub:\n${top3}\n` : '') +
-          `\n💡 Rekomendasi:\n${rekomendasi}`
+          `\n💡 Rekomendasi:\n${sanitize(rekomendasi)}`
       );
     } catch (e) {
       console.error('❌ Error kirim ke API HF:', e.message);
@@ -176,17 +201,16 @@ client.on('message', async (message) => {
   }
 });
 
-// ====== Gemini Helper ======
+// ====== Gemini Helper: Rekomendasi dari jenis (hasil klasifikasi gambar) ======
 async function getRekomendasiGemini(jenis) {
   if (!hasGemini) return 'GEMINI_API_KEY belum di-set.';
   const prompt =
-`Jenis sampah: ${jenis}
+`Kamu adalah asisten persampahan untuk masyarakat (Indonesia).
+Jenis sampah: ${jenis}
 Berikan 3 cara pengelolaan terbaik (poin).
-Format:
-• ...
-• ...
-• ...
-Bahasa santai dan mudah dipahami masyarakat.`;
+• Tulis ringkas, jelas, ramah.
+• Hindari istilah teknis berlebihan.
+• Kalau berbahaya, tekankan kehati-hatian.`;
 
   try {
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
@@ -197,4 +221,24 @@ Bahasa santai dan mudah dipahami masyarakat.`;
     console.error('❌ Gemini error:', err?.message || err);
     return '⚠️ AI sedang sibuk, coba lagi nanti.';
   }
+}
+
+// ====== Gemini Helper: Jawab pertanyaan dasar seputar sampah ======
+async function jawabPertanyaanDasarGemini(pertanyaan) {
+  const prompt =
+`Peran: Kamu adalah SKARA, asisten persampahan untuk warga Indonesia.
+Tugas: Jawab pertanyaan dasar seputar sampah secara singkat dan tepat.
+Aturan:
+- Fokus domain persampahan: kategori (organik/anorganik/residu/B3), cara buang, daur ulang, kompos, TPS, e-waste, minyak jelantah, dsb.
+- Jika pertanyaan "X termasuk apa?", jawab salah satu: organik/anorganik/residu/B3 + alasan 1 kalimat + saran ringkas.
+- Maksimal 5 kalimat ATAU 5 poin pendek.
+- Tanpa disclaimer, tanpa menyebut sumber, tanpa menyebut fitur bot.
+- Jika di luar topik persampahan, jawab singkat: "Maaf, pertanyaan di luar topik pengelolaan sampah."
+
+Pertanyaan: """${pertanyaan}"""`;
+
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+  const res = await model.generateContent(prompt);
+  const teks = res?.response?.text() || 'Maaf, belum bisa menjawab saat ini.';
+  return sanitize(teks);
 }
