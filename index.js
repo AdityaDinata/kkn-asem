@@ -1,6 +1,6 @@
 // index.js
-// -- Pastikan di package.json ada: "type": "module"
-// -- ENV: API_URL, GEMINI_API_KEY, GEMINI_MODEL (opsional), CHROMIUM_PATH (opsional), DEBUG=1 (opsional)
+// -- Pastikan di package.json ada:  "type": "module"
+// -- ENV yang dipakai: API_URL, GEMINI_API_KEY, CHROMIUM_PATH (opsional)
 
 import wwebjs from 'whatsapp-web.js';
 const { Client, LocalAuth } = wwebjs;
@@ -14,19 +14,14 @@ import { fileURLToPath } from 'url';
 import { config } from 'dotenv';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-// ====== Path & dotenv (AMAN untuk PM2) ======
+config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-config({ path: path.join(__dirname, '.env') });
 
 // ====== Konfigurasi API ======
 const API_URL = process.env.API_URL ?? 'https://MakanKecoa-chatbot.hf.space/predict';
 const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
-const DEBUG = process.env.DEBUG === '1';
-
 const genAI = GEMINI_KEY ? new GoogleGenerativeAI(GEMINI_KEY) : null;
-const log = (...a) => { if (DEBUG) console.log('[SKARA]', ...a); };
 
 // ====== WhatsApp Client ======
 const client = new Client({
@@ -51,16 +46,13 @@ if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
 const nice = (s = '') => s.replace(/_/g, ' ');
 const hasGemini = !!genAI;
 
-// Escape karakter formatting WA biar nggak auto-bold/italic
-const sanitize = (s = '') => (s ?? '').replace(/([*_`~>])/g, '\\$1');
+// Escape karakter yang bikin formatting WA berantakan pada output AI
+const sanitize = (s = '') => s.replace(/([*_`~>])/g, '\\$1');
 
-// Deteksi “pertanyaan dasar seputar sampah” (lebih longgar)
-const qaTriggers = /\b(apakah|apa|apa\s*itu|gimana|bagaimana|termasuk|masuk|dibuang\s*ke|ke\s*mana|dimana|di\s*mana)\b/i;
+// Deteksi “pertanyaan dasar seputar sampah”
+const qaTriggers = /\b(apakah|apa|gimana|bagaimana|termasuk|masuk|dibuang\s*ke|ke\s*mana|dimana|di\s*mana)\b/i;
 const wasteTerms = /\b(sampah|organik|anorganik|b3|residu|plastik|kaca|kertas|kardus|logam|minyak\s*jelantah|oli|popok|styrofoam|stirofoam|e-?waste|elektronik|baterai|aki|kompos|bank\s*sampah|tps|tpst|tpa|limbah)\b/i;
-const isBasicWasteQuestion = (t = '') => {
-  const s = (t || '').toLowerCase();
-  return wasteTerms.test(s) && (qaTriggers.test(s) || s.includes('?') || /termasuk\s*apa/.test(s));
-};
+const isBasicWasteQuestion = (t = '') => (qaTriggers.test(t) || t.includes('?')) && wasteTerms.test(t);
 
 // ====== Daftar TPS (contoh) ======
 const daftarTPS = [
@@ -89,10 +81,7 @@ function hitungJarak(lat1, lon1, lat2, lon2) {
 
 // ====== WhatsApp Lifecycle ======
 client.on('qr', (qr) => qrcode.generate(qr, { small: true }));
-client.on('ready', () => {
-  console.log('✅ Bot WhatsApp siap digunakan!');
-  console.log('🔑 Gemini:', hasGemini ? 'ON' : 'OFF', '• Model:', GEMINI_MODEL);
-});
+client.on('ready', () => console.log('✅ Bot WhatsApp siap digunakan!'));
 client.on('auth_failure', (m) => console.error('❌ Auth failure:', m));
 client.on('disconnected', (r) => console.error('⚠️ Disconnected:', r));
 client.initialize();
@@ -101,7 +90,6 @@ client.initialize();
 client.on('message', async (message) => {
   const textRaw = message.body || '';
   const text = textRaw.toLowerCase().trim();
-  log('RX', { from: message.from, type: message.type, hasMedia: message.hasMedia, text: textRaw });
 
   // Handler lokasi → TPS terdekat
   if (message.type === 'location' && message.location) {
@@ -138,22 +126,20 @@ client.on('message', async (message) => {
   }
 
   // ====== Pertanyaan Dasar Seputar Sampah (pakai Gemini) ======
+  // Contoh: "apakah plastik organik?", "kardus termasuk apa?", "styrofoam dibuang ke mana?"
   if (!message.hasMedia && text) {
     if (isBasicWasteQuestion(textRaw)) {
-      log('QA matched');
       if (!hasGemini) {
         return message.reply('Aktifkan *GEMINI_API_KEY* agar saya bisa menjawab pertanyaan seputar sampah.');
       }
       try {
-        try { if (typeof message.react === 'function') await message.react('💬'); } catch {}
+        await message.react('💬');
         const jawaban = await jawabPertanyaanDasarGemini(textRaw);
         return message.reply(sanitize(jawaban));
       } catch (e) {
         console.error('❌ Gemini QA error:', e?.message || e);
         return message.reply('⚠️ Gagal menjawab saat ini. Coba lagi ya.');
       }
-    } else {
-      log('QA not matched');
     }
   }
 
@@ -229,7 +215,7 @@ Berikan 3 cara pengelolaan terbaik (poin).
 • Kalau berbahaya, tekankan kehati-hatian.`;
 
   try {
-    const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
     const result = await model.generateContent(prompt);
     const teks = result?.response?.text();
     return teks || '⚠️ Tidak ada rekomendasi dari AI.';
@@ -254,7 +240,7 @@ Aturan:
 Pertanyaan: """${pertanyaan}"""`;
 
   try {
-    const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
     const res = await model.generateContent(prompt);
     const teks = res?.response?.text() || 'Maaf, belum bisa menjawab saat ini.';
     return teks;
