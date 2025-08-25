@@ -312,7 +312,7 @@ Berikan 3 cara pengelolaan terbaik (poin).
 // ====== Gemini Helper: Jawab pertanyaan dasar seputar sampah ======
 async function jawabPertanyaanDasarGemini(pertanyaan, rid) {
   const prompt =
-`Peran: Kamu adalah SKARA, asisten persampahan untuk warga Indonesia.
+`Peran: Kamu adalah SKARA, asisten persampahan untuk warga Karang Rejo.
 Tugas: Jawab pertanyaan dasar seputar sampah secara singkat dan tepat.
 Aturan:
 - Fokus domain persampahan: kategori (organik/anorganik/residu/B3), cara buang, daur ulang, kompos, TPS, e-waste, minyak jelantah, dsb.
